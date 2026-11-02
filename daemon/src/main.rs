@@ -594,7 +594,7 @@ async fn up(state: &State, opts: UpOpts) -> Result<()> {
     }
 
     let mut tun_ip: Option<Ipv4Addr> = None;
-    let mut os_routes = os::Routes::default();
+    let mut os_routes: Option<os::Routes> = None;
     let mut router = false;
     let mut exit_routing: Option<os::ExitRouting> = None;
     let names = dns::Names::default();
@@ -648,6 +648,7 @@ async fn up(state: &State, opts: UpOpts) -> Result<()> {
             let (_, prefix) = view.config.prefix()?;
             engine.start_tun(&dev, me.ip, prefix).await?;
             tun_ip = Some(me.ip);
+            os_routes = Some(os::Routes::new(&dev)?);
             if !no_dns {
                 let (names, ip) = (names.clone(), me.ip);
                 tokio::spawn(async move {
@@ -678,7 +679,9 @@ async fn up(state: &State, opts: UpOpts) -> Result<()> {
         info!(epoch = view.epoch, peers = ?peers.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), "netmap");
         engine.set_peers(peers).await;
         if tun_ip.is_some() {
-            os_routes.sync(&dev, &engine.routed_prefixes().await);
+            if let Some(r) = os_routes.as_mut() {
+                r.sync(&engine.routed_prefixes().await);
+            }
             let exit = exit_node.as_deref().and_then(|name| {
                 peers_of(view, &keys.public_key(), Some(name))
                     .into_iter()
@@ -713,6 +716,9 @@ async fn up(state: &State, opts: UpOpts) -> Result<()> {
     }
     if let Some(r) = exit_routing.take() {
         r.disable();
+    }
+    if let Some(r) = os_routes.take() {
+        r.teardown();
     }
     if dns_registered {
         dns::unregister_resolved(&dev);

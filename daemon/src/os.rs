@@ -16,32 +16,73 @@ fn run(cmd: &str, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-/// Keeps the OS routes for peer prefixes (subnet routes) pointing at the TUN
-#[derive(Default)]
+/// toolnet's routing table: subnet routes from peers, plus the default route
+/// while an exit node is in use. It is consulted after the main table (minus
+/// the main default route), so a network the machine is directly on, like the
+/// home LAN when you're home, keeps being reached directly.
+const TABLE: &str = "5213";
+const PREF_UDP: u32 = 5200;
+const PREF_BYPASS_FIRST: u32 = 5201;
+const PREF_SUPPRESS: u32 = 5290;
+const PREF_TUNNEL: u32 = 5291;
+
+fn flush_policy() {
+    for pref in [PREF_UDP, PREF_BYPASS_FIRST, PREF_SUPPRESS, PREF_TUNNEL] {
+        while run("ip", &["rule", "del", "pref", &pref.to_string()]).is_ok() {}
+    }
+    let _ = run("ip", &["route", "flush", "table", TABLE]);
+}
+
+/// Keeps the routes for peer prefixes (subnet routes) pointing at the TUN, in
+/// toolnet's table
 pub struct Routes {
+    dev: String,
     installed: BTreeSet<Cidr>,
 }
 
 impl Routes {
-    pub fn sync(&mut self, dev: &str, wanted: &[Cidr]) {
-        let wanted: BTreeSet<Cidr> = wanted.iter().copied().collect();
+    pub fn new(dev: &str) -> Result<Self> {
+        flush_policy();
+        run("ip", &["rule", "add", "pref", &PREF_SUPPRESS.to_string(), "lookup", "main", "suppress_prefixlength", "0"])?;
+        run("ip", &["rule", "add", "pref", &PREF_TUNNEL.to_string(), "lookup", TABLE])?;
+        Ok(Self { dev: dev.to_string(), installed: BTreeSet::new() })
+    }
+
+    pub fn sync(&mut self, wanted: &[Cidr]) {
+        let dev = self.dev.as_str();
+        let wanted: BTreeSet<Cidr> = wanted.iter().copied().filter(|c| c.len > 0).collect();
         for old in self.installed.difference(&wanted) {
-            match run("ip", &["route", "del", &old.to_string(), "dev", dev]) {
+            match run("ip", &["route", "del", &old.to_string(), "dev", dev, "table", TABLE]) {
                 Ok(()) => info!(route = %old, "route removed"),
                 Err(e) => warn!("removing route {old}: {e:#}"),
             }
         }
         for new in wanted.difference(&self.installed) {
-            if new.len == 0 {
-                continue; // the default route is ExitRouting's job
-            }
-            match run("ip", &["route", "replace", &new.to_string(), "dev", dev]) {
+            match run("ip", &["route", "replace", &new.to_string(), "dev", dev, "table", TABLE]) {
                 Ok(()) => info!(route = %new, "route added"),
                 Err(e) => warn!("adding route {new}: {e:#}"),
             }
+            if local_route(new) {
+                info!(route = %new, "also a local network here: reached directly while on it");
+            }
         }
-        self.installed = wanted.into_iter().filter(|c| c.len > 0).collect();
+        self.installed = wanted;
     }
+
+    /// Removes every rule and route toolnet added
+    pub fn teardown(self) {
+        flush_policy();
+        info!("routing table {TABLE} and rules removed");
+    }
+}
+
+/// Whether the main table has a route for exactly this prefix (it wins)
+fn local_route(c: &Cidr) -> bool {
+    Command::new("ip")
+        .args(["route", "show", "table", "main", "exact", &c.to_string()])
+        .output()
+        .map(|o| o.status.success() && !o.stdout.is_empty())
+        .unwrap_or(false)
 }
 
 const NFT_TABLE: &str = "toolnet";
@@ -91,31 +132,22 @@ pub fn disable_router() {
     let _ = run("nft", &["delete", "table", "ip", NFT_TABLE]);
 }
 
-/// Policy routing for using an exit node: everything goes into the TUN except
-/// our own peer traffic (iroh's UDP port), the relays and Nostr relays we
-/// need to reach the exit node at all, and anything the main table routes
-/// more specifically than its default route (LAN, the tailnet itself).
+/// Using an exit node: a default route in toolnet's table, except for our own
+/// peer traffic (iroh's UDP port) and the relays and Nostr relays we need to
+/// reach the exit node at all. Anything the main table routes more
+/// specifically than its default route (LAN, the tailnet) stays direct.
 pub struct ExitRouting {
     dev: String,
     bypass: BTreeSet<std::net::Ipv4Addr>,
 }
 
-const EXIT_TABLE: &str = "5213";
-const PREF_UDP: u32 = 5200;
-const PREF_BYPASS_FIRST: u32 = 5201;
-const PREF_SUPPRESS: u32 = 5290;
-const PREF_TUNNEL: u32 = 5291;
-
 impl ExitRouting {
     pub fn enable(dev: &str, iroh_ports: &[u16]) -> Result<Self> {
-        Self::flush();
-        run("ip", &["route", "replace", "default", "dev", dev, "table", EXIT_TABLE])?;
         for port in iroh_ports {
             let (pref, port) = (PREF_UDP.to_string(), port.to_string());
             run("ip", &["rule", "add", "pref", &pref, "ipproto", "udp", "sport", &port, "lookup", "main"])?;
         }
-        run("ip", &["rule", "add", "pref", &PREF_SUPPRESS.to_string(), "lookup", "main", "suppress_prefixlength", "0"])?;
-        run("ip", &["rule", "add", "pref", &PREF_TUNNEL.to_string(), "lookup", EXIT_TABLE])?;
+        run("ip", &["route", "replace", "default", "dev", dev, "table", TABLE])?;
         // Replies from the internet arrive on the TUN with foreign source
         // addresses: strict reverse path filtering would drop them
         let _ = std::fs::write(format!("/proc/sys/net/ipv4/conf/{dev}/rp_filter"), "2");
@@ -138,15 +170,11 @@ impl ExitRouting {
         self.bypass = ips;
     }
 
-    fn flush() {
-        for pref in [PREF_UDP, PREF_BYPASS_FIRST, PREF_SUPPRESS, PREF_TUNNEL] {
+    pub fn disable(self) {
+        let _ = run("ip", &["route", "del", "default", "dev", &self.dev, "table", TABLE]);
+        for pref in [PREF_UDP, PREF_BYPASS_FIRST] {
             while run("ip", &["rule", "del", "pref", &pref.to_string()]).is_ok() {}
         }
-        let _ = run("ip", &["route", "flush", "table", EXIT_TABLE]);
-    }
-
-    pub fn disable(self) {
-        Self::flush();
         info!("exit node routing off ({})", self.dev);
     }
 }

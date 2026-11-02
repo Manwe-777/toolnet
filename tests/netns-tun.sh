@@ -8,7 +8,8 @@
 #   lan:      192.168.77.10, reachable only from router
 #
 # Checks: tailnet ping + TCP; alpha reaches the LAN host through the router
-# once the owner allows the route; and not after it's withdrawn.
+# once the owner allows the route, unless alpha is itself on a network with
+# that prefix; and not after it's withdrawn.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 BIN=${BIN:-$HERE/target/debug/toolnet}
@@ -94,8 +95,18 @@ echo "  unreachable, as expected"
 echo "=== owner allows 192.168.77.0/24 for router"
 "$BIN" --state "$W/owner" owner routes router 192.168.77.0/24
 wait_for "$W/alpha.log" "route added" 20
-inns alpha ip route show dev toolnet0 | sed 's/^/  /'
+inns alpha ip route show table 5213 | sed 's/^/  /'
 inns alpha ping -c 3 -i 0.2 -W 2 192.168.77.10 | tail -2
+
+echo "=== alpha joins a local network with the same prefix: it stays local"
+inns alpha sh -c "ip link add home0 type dummy; ip addr add 192.168.77.99/24 dev home0; ip link set home0 up"
+via=$(inns alpha ip -o route get 192.168.77.10 | grep -o 'dev [^ ]*')
+[ "$via" = "dev home0" ] || { echo "FAIL: 192.168.77.10 goes $via"; exit 1; }
+echo "  192.168.77.10 -> $via"
+inns alpha ip link del home0
+via=$(inns alpha ip -o route get 192.168.77.10 | grep -o 'dev [^ ]*')
+[ "$via" = "dev toolnet0" ] || { echo "FAIL: 192.168.77.10 goes $via"; exit 1; }
+echo "  left it: 192.168.77.10 -> $via"
 
 echo "=== owner withdraws the route"
 "$BIN" --state "$W/owner" owner routes router
