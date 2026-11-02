@@ -164,6 +164,14 @@ impl Engine {
         self.endpoint.id()
     }
 
+    /// Local UDP ports iroh sends peer traffic from
+    pub fn udp_ports(&self) -> Vec<u16> {
+        let mut ports: Vec<u16> = self.endpoint.bound_sockets().iter().map(|a| a.port()).collect();
+        ports.sort();
+        ports.dedup();
+        ports
+    }
+
     /// Creates the TUN device and starts forwarding packets to peers
     pub async fn start_tun(&self, name: &str, ip: Ipv4Addr, prefix: u8) -> Result<()> {
         let dev = DeviceBuilder::new()

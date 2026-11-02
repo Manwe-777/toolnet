@@ -91,6 +91,12 @@ enum Cmd {
         /// e.g. a LAN behind this machine. The owner must approve them
         #[arg(long, value_delimiter = ',')]
         advertise_routes: Vec<engine::Cidr>,
+        /// Offer to be an exit node (advertises 0.0.0.0/0; the owner must approve it)
+        #[arg(long)]
+        advertise_exit_node: bool,
+        /// Send all internet traffic through this member (by name)
+        #[arg(long)]
+        exit_node: Option<String>,
     },
 }
 
@@ -249,8 +255,11 @@ async fn main() -> Result<()> {
         }
         Cmd::Owner { cmd } => owner(&state, cmd).await,
         Cmd::Status => status(&state).await,
-        Cmd::Up { no_tun, dev, offline, bind, iroh_relays, advertise_routes } => {
-            up(&state, no_tun, dev, offline, bind, iroh_relays, advertise_routes).await
+        Cmd::Up { no_tun, dev, offline, bind, iroh_relays, mut advertise_routes, advertise_exit_node, exit_node } => {
+            if advertise_exit_node {
+                advertise_routes.push("0.0.0.0/0".parse()?);
+            }
+            up(&state, UpOpts { no_tun, dev, offline, bind, iroh_relays, advertise_routes, exit_node }).await
         }
     }
 }
@@ -449,8 +458,9 @@ fn hostname() -> String {
         .unwrap_or_else(|_| "unknown".into())
 }
 
-/// Peers for the engine: members other than us, with valid node info
-fn peers_of(view: &View, me: &PublicKey) -> Vec<Peer> {
+/// Peers for the engine: members other than us, with valid node info. A
+/// default route is only kept for the exit node we chose
+fn peers_of(view: &View, me: &PublicKey, exit_node: Option<&str>) -> Vec<Peer> {
     let mut peers = vec![];
     for (key, member) in &view.config.members {
         let Ok(pk) = PublicKey::from_hex(key) else { continue };
@@ -466,6 +476,7 @@ fn peers_of(view: &View, me: &PublicKey) -> Vec<Peer> {
             .iter()
             .filter_map(|r| r.parse::<engine::Cidr>().ok())
             .filter(|r| allowed.contains(r))
+            .filter(|r| r.len > 0 || exit_node == Some(member.name.as_str()))
             .collect();
         peers.push(Peer {
             name: member.name.clone(),
@@ -479,15 +490,39 @@ fn peers_of(view: &View, me: &PublicKey) -> Vec<Peer> {
     peers
 }
 
-async fn up(
-    state: &State,
+struct UpOpts {
     no_tun: bool,
     dev: String,
     offline: bool,
     bind: Option<SocketAddr>,
     iroh_relays: Vec<iroh::RelayUrl>,
     advertise_routes: Vec<engine::Cidr>,
-) -> Result<()> {
+    exit_node: Option<String>,
+}
+
+/// IPv4 addresses of the hosts in these URLs (relays we must reach directly)
+async fn resolve_hosts(urls: impl IntoIterator<Item = String>) -> std::collections::BTreeSet<Ipv4Addr> {
+    let mut out = std::collections::BTreeSet::new();
+    for url in urls {
+        let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(&url);
+        let hostport = rest.split('/').next().unwrap_or("");
+        let host = hostport.rsplit_once(':').map(|(h, _)| h).unwrap_or(hostport).trim_end_matches('.');
+        if let Ok(ip) = host.parse::<Ipv4Addr>() {
+            out.insert(ip);
+            continue;
+        }
+        if let Ok(addrs) = tokio::net::lookup_host((host, 443)).await {
+            out.extend(addrs.filter_map(|a| match a.ip() {
+                std::net::IpAddr::V4(v4) => Some(v4),
+                _ => None,
+            }));
+        }
+    }
+    out
+}
+
+async fn up(state: &State, opts: UpOpts) -> Result<()> {
+    let UpOpts { no_tun, dev, offline, bind, iroh_relays, advertise_routes, exit_node } = opts;
     let (keys, cfg) = (state.device_keys()?, state.config()?);
     let id = Identity { device: keys.clone(), owner: parse_pubkey(&cfg.owner)?, net: cfg.net.clone() };
     let engine = Engine::start(EngineConfig {
@@ -553,6 +588,7 @@ async fn up(
     let mut tun_ip: Option<Ipv4Addr> = None;
     let mut os_routes = os::Routes::default();
     let mut router = false;
+    let mut exit_routing: Option<os::ExitRouting> = None;
     let mut last_status = None;
     let mut report = tokio::time::interval(Duration::from_secs(60));
     // Losing membership tears everything down, but only once it lasts: during
@@ -615,12 +651,45 @@ async fn up(
                 warn!(old = %ip, new = %me.ip, "our tailnet IP changed: restart toolnet to apply");
             }
         }
-        let peers = peers_of(view, &keys.public_key());
+        let peers = peers_of(view, &keys.public_key(), exit_node.as_deref());
         info!(epoch = view.epoch, peers = ?peers.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), "netmap");
         engine.set_peers(peers).await;
         if tun_ip.is_some() {
             os_routes.sync(&dev, &engine.routed_prefixes().await);
+            let exit = exit_node.as_deref().and_then(|name| {
+                peers_of(view, &keys.public_key(), Some(name))
+                    .into_iter()
+                    .find(|p| p.name == name && p.routes.iter().any(|r| r.len == 0))
+            });
+            match (&exit, exit_routing.is_some()) {
+                (Some(peer), false) => match os::ExitRouting::enable(&dev, &engine.udp_ports()) {
+                    Ok(r) => {
+                        info!(exit = %peer.name, "using exit node");
+                        exit_routing = Some(r);
+                    }
+                    Err(e) => warn!("can't route through the exit node: {e:#}"),
+                },
+                (None, true) => {
+                    if let Some(name) = &exit_node {
+                        warn!(exit = %name, "exit node gone (not allowed, not advertised or offline): traffic goes direct");
+                    }
+                    exit_routing.take().unwrap().disable();
+                }
+                _ => {}
+            }
+            if let Some(routing) = exit_routing.as_mut() {
+                // Everything we need to reach peers at all must bypass the tunnel
+                let mut urls: Vec<String> = cfg.relays.clone();
+                urls.extend(view.nodes.values().filter_map(|n| n.relay.clone()));
+                urls.extend(engine.endpoint.addr().relay_urls().map(|r| r.to_string()));
+                routing.set_bypass(resolve_hosts(urls).await);
+            }
+        } else if exit_node.is_some() {
+            warn!("--exit-node needs the TUN device (not --no-tun)");
         }
+    }
+    if let Some(r) = exit_routing.take() {
+        r.disable();
     }
     if router {
         os::disable_router();
