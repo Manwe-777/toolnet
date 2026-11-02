@@ -94,6 +94,8 @@ pub struct Db {
     /// Last created_at we used per final key, so updates within the same
     /// second still win (like ToolDB's putData)
     last_put: Mutex<HashMap<String, u64>>,
+    /// Bumped on every forced reconnect, so subscribers can resubscribe
+    pub reconnects: tokio::sync::watch::Sender<u64>,
 }
 
 impl Db {
@@ -109,7 +111,17 @@ impl Db {
                 .with_context(|| format!("adding relay {relay}"))?;
         }
         client.connect().and_wait(Duration::from_secs(5)).await;
-        Ok(Self { client, last_put: Default::default() })
+        Ok(Self { client, last_put: Default::default(), reconnects: tokio::sync::watch::Sender::new(0) })
+    }
+
+    /// Drops and reopens every relay connection. After a network switch the
+    /// old websockets are dead but only time out after a minute or more;
+    /// until then nothing is published or received.
+    pub async fn reconnect(&self) {
+        self.client.disconnect().await;
+        self.client.connect().and_wait(Duration::from_secs(5)).await;
+        self.reconnects.send_modify(|n| *n += 1);
+        tracing::info!("Nostr relays reconnected");
     }
 
     /// Filter for every value of our topic written by these authors

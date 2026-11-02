@@ -546,7 +546,7 @@ async fn up(state: &State, opts: UpOpts) -> Result<()> {
     if !offline {
         engine.spawn_punch_assist();
     }
-    let db = Db::connect(&cfg.relays).await?;
+    let db = std::sync::Arc::new(Db::connect(&cfg.relays).await?);
 
     // Our node info, kept current from the endpoint's addresses
     let endpoint_id = engine.id().to_string();
@@ -562,11 +562,25 @@ async fn up(state: &State, opts: UpOpts) -> Result<()> {
     };
     let (info_tx, info_rx) = watch::channel(make_info(&engine.endpoint.addr()));
     {
-        let engine = engine.clone();
+        let (engine, db) = (engine.clone(), db.clone());
         tokio::spawn(async move {
             use n0_watcher::Watcher;
             let mut w = engine.endpoint.watch_addr();
+            let local = |a: &iroh::EndpointAddr| -> std::collections::BTreeSet<std::net::IpAddr> {
+                let public = a.ip_addrs().map(|s| s.ip()).collect::<std::collections::BTreeSet<_>>();
+                if_addrs::get_if_addrs().unwrap_or_default().into_iter().map(|i| i.ip()).filter(|ip| public.contains(ip)).collect()
+            };
+            let mut last_local = local(&engine.endpoint.addr());
             while let Ok(addr) = w.updated().await {
+                // Our own interface addresses changed: a network switch. The
+                // Nostr websockets on the old network are dead: reconnect now
+                let now_local = local(&addr);
+                if now_local != last_local {
+                    info!(from = ?last_local, to = ?now_local, "network changed");
+                    last_local = now_local;
+                    let db = db.clone();
+                    tokio::spawn(async move { db.reconnect().await });
+                }
                 let info = make_info(&addr);
                 info_tx.send_if_modified(|cur| {
                     let changed = cur.addrs != info.addrs || cur.relay != info.relay;
@@ -580,7 +594,6 @@ async fn up(state: &State, opts: UpOpts) -> Result<()> {
     }
 
     let (view_tx, mut view_rx) = watch::channel((Status::NoNetwork, None::<View>));
-    let db = std::sync::Arc::new(db);
     {
         let (db, id, view_tx) = (db.clone(), id.clone(), view_tx);
         tokio::spawn(async move {

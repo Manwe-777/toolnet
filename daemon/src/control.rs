@@ -32,9 +32,22 @@ pub async fn follow(db: &Db, id: &Identity, tx: watch::Sender<(Status, Option<Vi
     let mut sub_id = SubscriptionId::new(format!("toolnet-{generation}"));
     db.client.subscribe(Db::filter(authors.clone())).with_id(sub_id.clone()).await?;
     let mut notifications = db.client.notifications();
+    let mut reconnects = db.reconnects.subscribe();
 
     loop {
-        let Some(n) = notifications.next().await else {
+        let n = tokio::select! {
+            n = notifications.next() => n,
+            _ = reconnects.changed() => {
+                // Fresh connections: subscribe again (stored values are
+                // replayed, and already known ones are ignored)
+                generation += 1;
+                let old = std::mem::replace(&mut sub_id, SubscriptionId::new(format!("toolnet-{generation}")));
+                let _ = db.client.unsubscribe(&old).await;
+                db.client.subscribe(Db::filter(authors.clone())).with_id(sub_id.clone()).await?;
+                continue;
+            }
+        };
+        let Some(n) = n else {
             anyhow::bail!("relay notifications ended");
         };
         let ClientNotification::Event { event, .. } = n else { continue };
@@ -105,8 +118,9 @@ pub async fn publish_node(
                     Err(e) => {
                         // Typical right after a network switch, until the
                         // relay connections are re-established: keep retrying
-                        warn!("publishing node info failed (retrying in 10 s): {e:#}");
+                        warn!("publishing node info failed (reconnecting, retrying in 10 s): {e:#}");
                         failed = true;
+                        db.reconnect().await;
                     }
                 }
             }

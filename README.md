@@ -85,6 +85,7 @@ tests/e2e-local.sh           # owner + 2 devices on a local ToolDB relay: join, 
 tests/compat.sh              # JS tool-db reads Rust's data; Rust accepts a JS approval
 tests/netns-tun.sh           # TUN traffic in namespaces, MagicDNS, subnet route on/off
 tests/netns-exit.sh          # exit node: internet only through the exit, peer traffic bypasses
+tests/netns-roam.sh          # network switch: reconnect to Nostr at once, republish, keep following
 ```
 
 All unprivileged (user namespaces) and offline. They need a built `../tool-db`

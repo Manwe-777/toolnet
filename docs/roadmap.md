@@ -17,17 +17,18 @@
 - **MagicDNS**: `<member>.<domain>` served on the tailnet IP, split DNS via
   systemd-resolved.
 - **systemd unit** with only `CAP_NET_ADMIN` and `CAP_NET_BIND_SERVICE`.
-- **Hole punching, LTE hotspot -> home: not possible on these networks.**
-  Raw UDP tests (`tools/punchtest.py`), no iroh: home filters by exact address
-  and port, and even a simultaneous punch to both sides' exact STUN-reported
-  addresses gets nothing through in either direction. LTE traffic to home
-  crosses an international backbone (~190 ms one way). So the relay is the
-  only path here, and iroh isn't at fault. The reason: home is behind the
-  ISP's carrier-grade NAT (the router's WAN address is 10.x.x.x, a private
-  one), so UPnP mappings (which iroh and Tailscale both create on the home
-  router) only open the inner NAT. Neither network has IPv6.
-- **Exit node from LTE** through the homelab, over an n0 relay: the internet
-  sees the home IP. Slow (~1.7 Mbit/s, 410 ms) because of the relay.
+- **Hole punching LTE hotspot -> home works**, with a low-TTL trick learned
+  from HyperDHT (`daemon/src/punch.rs`). Home is behind the ISP's carrier-grade
+  NAT (router WAN 10.x.x.x) and LTE behind the carrier's; both map
+  consistently, yet plain punching (iroh's, or raw UDP) never connected: our
+  first packets reach the far side before it has sent anything, an ICMP error
+  comes back, and our own NAT drops the mapping. Sending the first packets
+  with TTL 5 opens our NATs without reaching the far side. Raw UDP A/B: TTL 64
+  never connects, TTL 5 at once. HyperDHT between the same machines also went
+  direct. toolnet: relay -> direct as soon as both sides knew each other's
+  current address; ~100-200 ms instead of ~410 ms through n0's US relay.
+  Throughput matched the hotspot's own download (~1.6 Mbit/s at the time).
+- **Exit node from LTE** through the homelab: the internet sees the home IP.
 - **First real run with TUN** (laptop + homelab, home Wi-Fi, public Nostr
   relays): tailnet ping both ways (direct, 2-3 ms), MagicDNS, 44 Mbit/s TCP
   over Wi-Fi (58 plain), the home LAN route accepted while at home without
@@ -39,12 +40,10 @@
 
 ## Next
 
-1. **A relay close to home.** From the LTE hotspot, home is only reachable
-   through a relay (see the hole punching result below), and n0's public relays
-   are in the US and rate limited: ~410 ms and ~1.7 Mbit/s through the exit
-   node. Options, none needing a port forward or DNS record: a small VPS relay
-   in South America reached by IP, or a relay on any device with a public IP.
-   Relays listed in the network config (item 8) go with it.
+1. **Verify the fast reconnect on a real network switch** (namespace test
+   passes): the punch waited ~3 min for dead Nostr websockets after the switch.
+   Also punch only after both sides have published fresh addresses, and
+   exchange punch timing over Nostr like HyperDHT does over its DHT.
 2. **systemd service on both machines**, so MagicDNS registers with resolved
    and nothing needs `setcap` by hand.
 3. **Owner app**: a PWA (like homelab-monitor's) holding the owner key, with
@@ -77,9 +76,7 @@
 - MagicDNS can't bind port 53 on a host that already runs a DNS server on
   `0.0.0.0:53` (the homelab). That host's own lookups of tailnet names fail;
   other devices are unaffected.
-- After a network switch, the Nostr websockets take ~75 s to time out and
-  reconnect; until then nothing is published or received (peers keep
-  working over iroh meanwhile). The node info publisher now retries; a faster
-  reconnect on network change would be better.
+- After a network switch the Nostr websockets used to take 1-3 min to time
+  out. Now a local address change (or a failed publish) reconnects at once.
 - `setcap` is lost on every rebuild: run from a copy (`~/.local/bin/toolnet`)
   and re-grant only when replacing it.
