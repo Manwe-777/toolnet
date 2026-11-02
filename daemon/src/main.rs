@@ -592,7 +592,9 @@ async fn up(state: &State, opts: UpOpts) -> Result<()> {
             use n0_watcher::Watcher;
             let mut w = engine.endpoint.watch_addr();
             let local = |a: &iroh::EndpointAddr| -> std::collections::BTreeSet<std::net::IpAddr> {
-                let public = a.ip_addrs().map(|s| s.ip()).collect::<std::collections::BTreeSet<_>>();
+                // Only real interfaces: our own TUN (and Docker, Tailscale...)
+                // coming and going is not a network switch
+                let public = control::useful_addrs(a.ip_addrs().copied()).iter().map(|s| s.ip()).collect::<std::collections::BTreeSet<_>>();
                 if_addrs::get_if_addrs().unwrap_or_default().into_iter().map(|i| i.ip()).filter(|ip| public.contains(ip)).collect()
             };
             let mut last_local = local(&engine.endpoint.addr());
