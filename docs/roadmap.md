@@ -39,8 +39,8 @@
    and relays listed in the network config.
 9. **Mobile**: Android VpnService / iOS NetworkExtension shells around the Rust
    core.
-10. **Performance**: batch TUN reads, GSO, multiple queues (debug build does
-    ~110 Mbit/s in namespaces, release ~600).
+10. **Performance**: batch TUN reads, GSO, multiple queues. Today: ~800 Mbit/s
+    TCP through the full daemon in namespaces (release build, one core).
 
 ## Known issues
 
