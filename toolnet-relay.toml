@@ -1,0 +1,47 @@
+# toolnet-relay config (iroh-relay 1.4). Deployment: toolnet-relay.override.yml.
+# Plain HTTP by IP; why that is acceptable: ~/toolnet/relay/relay.example.toml.
+
+http_bind_addr = "[::]:3340"
+enable_metrics = true
+metrics_bind_addr = "[::]:9090"     # not published
+
+# Only these toolnet devices may relay; everyone else is refused.
+[access]
+allowlist = [
+  "1833a1d12fadea4e568eeedd7c037b422bcfd2a9648c4b3a464b2c82963d7427",  # laptop (spike key)
+  "9a83b7af858df36ff54e9d22c35e28b0021e4696ce68e292fd362981c274cd2f",  # homelab-server (spike key)
+]
+EOF
+python3 - <<'"'"'EOF'"'"'
+p="README.md"; s=open(p).read()
+start=s.index("## toolnet-relay"); end=s.index("## mtgatool-admin")
+s=s[:start]+"""## toolnet-relay — the one internet-facing service
+
+A self-hosted [iroh-relay](https://iroh.computer) for toolnet, the
+Tailscale-style VPN in `~/toolnet`. Peers that can\x27t reach each other
+directly (LTE, carrier NAT) relay through it. Traffic is end to end
+encrypted between peers; the relay only forwards ciphertext.
+
+**It is the only thing exposed to the internet**, through its own port
+forward (`3340/tcp` → `192.168.1.2`), never NPM\x27s 443, so no `*.manuh.app`
+service becomes public by accident. Only the endpoint ids in
+`toolnet-relay.toml` may use it.
+
+Plain HTTP by IP: no domain, DNS record or certificate, so a WAN IP change
+needs nothing here (toolnet publishes the current relay URL itself). Peers
+use `http://<WAN IP>:3340`, or `http://192.168.1.2:3340` from the LAN.
+
+```bash
+cd ~/toolnet/relay
+docker compose -f docker-compose.yml \\
+  -f ~/homelab/compose/apps/toolnet-relay.override.yml up -d --build
+docker restart toolnet-relay       # after editing toolnet-relay.toml
+```
+
+It has no state of its own.
+
+"""+s[end:]
+s=s.replace("| `toolnet-relay.override.yml` | config from this repo, the dedicated `relay.manuh.app` cert read from NPM\x27s `letsencrypt/` |","| `toolnet-relay.override.yml` | config (the device allowlist) from this repo |")
+open(p,"w").write(s)
+EOF
+cd ~/toolnet/relay && docker compose -f docker-compose.yml -f ~/homelab/compose/apps/toolnet-relay.override.yml up -d --build 2>&1 | tail -3; sleep 3; docker ps --filter name=toolnet-relay --format "{{.Names}} {{.Status}} {{.Ports}}"; docker logs toolnet-relay 2>&1 | tail -5; curl -s -o /dev/null -w "LAN http %{http_code}\n" http://192.168.1.2:3340/; git -C ~/homelab status --short'

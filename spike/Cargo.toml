@@ -9,6 +9,7 @@ bytes = "1.12.1"
 clap = { version = "4", features = ["derive"] }
 data-encoding = "2.11.1"
 iroh = "1"
+n0-watcher = "1.0.1"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

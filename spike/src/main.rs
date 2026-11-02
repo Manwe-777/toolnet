@@ -64,6 +64,10 @@ enum Cmd {
         /// No relays and no address lookup: direct addresses only (offline tests)
         #[arg(long)]
         offline: bool,
+        /// No TUN device: connect and ping over QUIC datagrams only. Needs no
+        /// privileges, for testing connectivity and hole punching
+        #[arg(long)]
+        no_tun: bool,
         /// TUN device name
         #[arg(long, default_value = "toolnet0")]
         dev: String,
@@ -125,8 +129,8 @@ async fn main() -> Result<()> {
             println!("{}", key.public());
             Ok(())
         }
-        Cmd::Up { key, ip, prefix, peers, peer_addrs, relays, bind, offline, dev } => {
-            up(load_or_create_key(&key)?, ip, prefix, peers, peer_addrs, relays, bind, offline, dev).await
+        Cmd::Up { key, ip, prefix, peers, peer_addrs, relays, bind, offline, no_tun, dev } => {
+            up(load_or_create_key(&key)?, ip, prefix, peers, peer_addrs, relays, bind, offline, no_tun, dev).await
         }
     }
 }
@@ -141,6 +145,7 @@ async fn up(
     relays: Vec<RelayUrl>,
     bind: Option<SocketAddr>,
     offline: bool,
+    no_tun: bool,
     dev: String,
 ) -> Result<()> {
     let me = key.public();
@@ -169,15 +174,33 @@ async fn up(
         info!("  relay:  {r}");
     }
 
-    let tun = Arc::new(
-        DeviceBuilder::new()
+    // Log our own address changes: after a network switch this shows whether
+    // we learned the new public address, which peers need to hole punch to us
+    {
+        let mut watcher = endpoint.watch_addr();
+        tokio::spawn(async move {
+            use n0_watcher::Watcher;
+            while let Ok(addr) = watcher.updated().await {
+                let ips: Vec<String> = addr.ip_addrs().map(|a| a.to_string()).collect();
+                let relays: Vec<String> = addr.relay_urls().map(|r| r.to_string()).collect();
+                info!("our addresses now: direct {ips:?} relay {relays:?}");
+            }
+        });
+    }
+
+    let tun = if no_tun {
+        info!("no TUN: pinging peers over QUIC datagrams");
+        None
+    } else {
+        let tun = DeviceBuilder::new()
             .name(&dev)
             .ipv4(ip, prefix, None)
             .mtu(TUN_MTU)
             .build_async()
-            .with_context(|| format!("creating TUN {dev} (needs CAP_NET_ADMIN)"))?,
-    );
-    info!("tun {dev} up: {ip}/{prefix}, mtu {TUN_MTU}");
+            .with_context(|| format!("creating TUN {dev} (needs CAP_NET_ADMIN)"))?;
+        info!("tun {dev} up: {ip}/{prefix}, mtu {TUN_MTU}");
+        Some(Arc::new(tun))
+    };
 
     let routes: Arc<HashMap<Ipv4Addr, EndpointId>> =
         Arc::new(peers.iter().map(|(id, ip)| (*ip, *id)).collect());
@@ -258,6 +281,12 @@ async fn up(
         });
     }
 
+    let Some(tun) = tun else {
+        tokio::signal::ctrl_c().await?;
+        endpoint.close().await;
+        return Ok(());
+    };
+
     // TUN -> peers
     let mut buf = vec![0u8; 65536];
     loop {
@@ -279,17 +308,52 @@ async fn up(
     Ok(())
 }
 
-/// Registers a connection and pipes its datagrams into the TUN until it closes
-async fn run_conn(peer: EndpointId, conn: Connection, conns: Conns, tun: Arc<AsyncDevice>) {
+/// Registers a connection and pipes its datagrams into the TUN until it closes.
+/// Without a TUN, pings the peer once a second and answers its pings.
+async fn run_conn(peer: EndpointId, conn: Connection, conns: Conns, tun: Option<Arc<AsyncDevice>>) {
     info!(peer = %peer.fmt_short(), "connected");
     conns.write().await.insert(peer, conn.clone());
-    loop {
-        match conn.read_datagram().await {
-            Ok(packet) => {
-                if let Err(e) = tun.send(&packet).await {
-                    warn!("tun write failed: {e}");
+    let start = std::time::Instant::now();
+    if tun.is_none() {
+        let conn = conn.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(1));
+            loop {
+                tick.tick().await;
+                let mut msg = b"PING".to_vec();
+                msg.extend_from_slice(&(start.elapsed().as_micros() as u64).to_be_bytes());
+                if conn.send_datagram(msg.into()).is_err() {
+                    break;
                 }
             }
+        });
+    }
+    loop {
+        match conn.read_datagram().await {
+            Ok(packet) => match &tun {
+                Some(tun) => {
+                    if let Err(e) = tun.send(&packet).await {
+                        warn!("tun write failed: {e}");
+                    }
+                }
+                None if packet.starts_with(b"PING") => {
+                    let mut pong = packet.to_vec();
+                    pong[..4].copy_from_slice(b"PONG");
+                    let _ = conn.send_datagram(pong.into());
+                }
+                None if packet.starts_with(b"PONG") && packet.len() == 12 => {
+                    let sent = u64::from_be_bytes(packet[4..12].try_into().unwrap());
+                    let rtt = start.elapsed().as_micros() as u64 - sent;
+                    let path = conn
+                        .paths()
+                        .iter()
+                        .find(|p| p.is_selected())
+                        .map(|p| if p.is_relay() { "RELAY" } else { "DIRECT" })
+                        .unwrap_or("?");
+                    info!(peer = %peer.fmt_short(), "pong {path} {:.1} ms", rtt as f64 / 1000.0);
+                }
+                None => {}
+            },
             Err(e) => {
                 warn!(peer = %peer.fmt_short(), "connection closed: {e}");
                 break;

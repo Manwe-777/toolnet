@@ -53,6 +53,19 @@ What we learned:
 4. iroh tries IPv6 lookups on a network without IPv6 ("no route to host").
    This is only noise, but worth filtering in logs.
 
+## NAT measurements (tools/natcheck.py, 2026-11-02)
+
+| Network | Public IP | Mapping |
+|---|---|---|
+| Home (router, laptop and server) | 203.0.113.10, no carrier NAT | **Consistent**, port preserved |
+| LTE hotspot (phone NAT + carrier) | 198.51.100.20 | **Consistent**, port not preserved (one stable port per socket) |
+
+Both sides are hole-punching friendly. So the failure to get `DIRECT` on
+LTE is **not** the NATs. Hyperswarm's port probing isn't needed for this pair.
+The suspect is the test itself: the laptop's endpoint started on home Wi-Fi
+and migrated to LTE. Next test: start both sides fresh with the laptop
+already on LTE, using `--no-tun` (no privileges needed) and iroh debug logs.
+
 ## Run it across real NATs
 
 On each machine:

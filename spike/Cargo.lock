@@ -3390,6 +3390,7 @@ dependencies = [
  "clap",
  "data-encoding",
  "iroh",
+ "n0-watcher",
  "tokio",
  "tracing",
  "tracing-subscriber",
