@@ -404,39 +404,52 @@ impl Engine {
     }
 
     /// Status lines for each desired peer
-    /// While a peer is only reachable through a relay, keep opening our NAT
-    /// toward its public addresses with low-TTL packets (see punch.rs)
+    /// While a peer is only reachable through a relay, keep opening the NATs
+    /// toward its public addresses (see punch.rs). One side sends with a low
+    /// TTL (opens only its own NATs), the other at full TTL (opens its NATs and
+    /// reaches ours); which one must be which depends on the networks, so the
+    /// roles swap every PUNCH_PHASE by the wall clock, which both sides share.
     pub fn spawn_punch_assist(&self) {
         let engine = self.clone();
         tokio::spawn(async move {
-            let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+            let me = engine.id();
+            let mut tick = tokio::time::interval(std::time::Duration::from_millis(500));
+            let mut last_phase = None;
             loop {
                 tick.tick().await;
-                let targets: Vec<(String, std::net::SocketAddrV4)> = {
+                let phase = (crate::now() / crate::punch::PUNCH_PHASE_SECS) % 2 == 1;
+                let targets: Vec<(String, std::net::SocketAddrV4, i32)> = {
                     let state = engine.state.read().await;
                     state
                         .peers
                         .values()
                         .filter(|p| {
-                            let direct = state.conns.get(&p.endpoint).is_some_and(|c| {
+                            !state.conns.get(&p.endpoint).is_some_and(|c| {
                                 c.paths().iter().any(|path| path.is_selected() && !path.is_relay())
-                            });
-                            !direct
+                            })
                         })
-                        .flat_map(|p| crate::punch::punch_targets(&p.addrs).into_iter().map(|a| (p.name.clone(), a)))
+                        .flat_map(|p| {
+                            // the dialer (lower id) starts low, the other side full
+                            let low = (me < p.endpoint) != phase;
+                            let ttl = if low { crate::punch::PUNCH_TTL } else { 64 };
+                            crate::punch::punch_targets(&p.addrs).into_iter().map(move |a| (p.name.clone(), a, ttl))
+                        })
                         .collect()
                 };
                 if targets.is_empty() {
                     continue;
                 }
                 for fd in crate::punch::iroh_sockets(&engine.udp_ports()) {
-                    for (name, dst) in &targets {
-                        if let Err(e) = crate::punch::send_low_ttl(fd, *dst, crate::punch::PUNCH_TTL) {
+                    for (name, dst, ttl) in &targets {
+                        if let Err(e) = crate::punch::send_with_ttl(fd, *dst, *ttl) {
                             debug!(peer = %name, %dst, "punch: {e}");
                         }
                     }
                 }
-                debug!(?targets, "low-TTL punch");
+                if last_phase != Some(phase) {
+                    debug!(?targets, "punching (peer, address, ttl)");
+                    last_phase = Some(phase);
+                }
             }
         });
     }

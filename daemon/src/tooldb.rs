@@ -96,6 +96,7 @@ pub struct Db {
     last_put: Mutex<HashMap<String, u64>>,
     /// Bumped on every forced reconnect, so subscribers can resubscribe
     pub reconnects: tokio::sync::watch::Sender<u64>,
+    relays: Vec<String>,
 }
 
 impl Db {
@@ -111,17 +112,28 @@ impl Db {
                 .with_context(|| format!("adding relay {relay}"))?;
         }
         client.connect().and_wait(Duration::from_secs(5)).await;
-        Ok(Self { client, last_put: Default::default(), reconnects: tokio::sync::watch::Sender::new(0) })
+        Ok(Self { client, last_put: Default::default(), reconnects: tokio::sync::watch::Sender::new(0), relays: relays.to_vec() })
     }
 
     /// Drops and reopens every relay connection. After a network switch the
     /// old websockets are dead but only time out after a minute or more;
     /// until then nothing is published or received.
     pub async fn reconnect(&self) {
-        self.client.disconnect().await;
+        use nostr_sdk::prelude::RelayStatus;
+        // Fresh relay objects: after disconnect() the old connection task
+        // lives on, retries on its own backoff (up to tens of seconds), and
+        // makes a new connect() a no-op. Subscriptions are redone by follow()
+        let _ = self.client.remove_all_relays().force().await;
+        for url in &self.relays {
+            if let Err(e) = self.client.add_relay(url.as_str()).await {
+                tracing::warn!("re-adding relay {url}: {e}");
+            }
+        }
         self.client.connect().and_wait(Duration::from_secs(5)).await;
+        let relays = self.client.relays().await;
+        let up = relays.values().filter(|r| r.status() == RelayStatus::Connected).count();
         self.reconnects.send_modify(|n| *n += 1);
-        tracing::info!("Nostr relays reconnected");
+        tracing::info!(connected = up, of = relays.len(), "Nostr relays reconnected");
     }
 
     /// Filter for every value of our topic written by these authors

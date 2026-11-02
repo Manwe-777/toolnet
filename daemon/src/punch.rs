@@ -8,8 +8,10 @@
 //! A packet with a TTL of a few hops opens our NAT for the peer's address and
 //! dies in the carrier's network before it reaches the peer: no ICMP error,
 //! the mapping stays, and iroh's own punching from the peer side gets through.
-//! Measured on an LTE hotspot -> home (both behind carrier NAT): TTL 64 never
-//! connects, TTL 5 connects at once. The same trick HyperDHT uses.
+//! Measured on an LTE hotspot -> home (both behind carrier NAT), raw UDP:
+//! both at TTL 64 never connects; LTE at TTL 5 and home at 64 connects at
+//! once; home at TTL 5 or 3 and LTE at 64 never does. The same trick HyperDHT
+//! uses (its client punches with low TTL, its server sends first).
 
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::os::fd::RawFd;
@@ -17,6 +19,11 @@ use std::os::fd::RawFd;
 /// Hops a punch packet lives: enough to leave our own NATs (hotspot, carrier),
 /// short of the peer's
 pub const PUNCH_TTL: i32 = 5;
+
+/// Seconds before the low / full TTL roles swap between the two sides.
+/// Measured LTE hotspot -> home: home must send at full TTL, LTE at low TTL;
+/// the other way around never connects
+pub const PUNCH_PHASE_SECS: u64 = 15;
 
 /// iroh's IPv4 UDP sockets in this process, found by their local port
 pub fn iroh_sockets(ports: &[u16]) -> Vec<RawFd> {
@@ -51,7 +58,7 @@ fn local_v4(fd: RawFd) -> Option<(u16, bool)> {
 
 /// Sends one tiny packet with the given TTL (per packet, through a control
 /// message: the socket's own TTL is untouched)
-pub fn send_low_ttl(fd: RawFd, dst: SocketAddrV4, ttl: i32) -> std::io::Result<()> {
+pub fn send_with_ttl(fd: RawFd, dst: SocketAddrV4, ttl: i32) -> std::io::Result<()> {
     // SAFETY: sendmsg with stack buffers that outlive the call
     unsafe {
         let mut sa: libc::sockaddr_in = std::mem::zeroed();
@@ -111,7 +118,7 @@ mod tests {
         let fds = iroh_sockets(&[port]);
         assert_eq!(fds.len(), 1, "finds the socket by port");
         let SocketAddr::V4(dst) = b.local_addr().unwrap() else { unreachable!() };
-        send_low_ttl(fds[0], dst, PUNCH_TTL).unwrap();
+        send_with_ttl(fds[0], dst, PUNCH_TTL).unwrap();
         let mut buf = [0u8; 8];
         let (n, from) = b.recv_from(&mut buf).unwrap();
         assert_eq!((n, from.port()), (1, port), "sent from that socket");

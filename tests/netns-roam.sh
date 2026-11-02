@@ -50,7 +50,7 @@ for n in alpha beta; do
 done
 
 for n in alpha beta; do
-  inns $n "$BIN" --state "$W/$n" up --no-tun --offline > "$W/$n.log" 2>&1 & pids+=($!)
+  inns $n env RUST_LOG=${ROAM_LOG:-info} "$BIN" --state "$W/$n" up --no-tun --offline > "$W/$n.log" 2>&1 & pids+=($!)
 done
 wait_for "$W/alpha.log" "connected peer=beta" 30
 wait_for "$W/alpha.log" 'published node info addrs=\["10.9.0.1:' 20
