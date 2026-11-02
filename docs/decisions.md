@@ -35,14 +35,17 @@ Log decisions here with a date. Update when resuming work.
 
 1. **Where does the owner key live?** On the phone (like homelab-monitor), with
    a CLI using NIP-46 to approve from the terminal? Or does the homelab hold it?
-2. **Relay when no peer is reachable:** if every peer is behind NAT, someone
-   has to run a relay (homelab port forward, a cheap VPS, or a public iroh
-   relay). Which default should we ship?
+2. **Relay when no peer is reachable:** with no port forwards at home, n0's
+   public iroh relays are the default today. A cheap VPS running `relay/` is
+   the self-hosted option. Which default should we ship?
 3. ~~Path B on mobile~~: resolved by path A, where phones are plain peers. They
    still need native VPN app shells (Android VpnService, iOS NetworkExtension).
 4. ~~Tailscale control protocol stability~~: dropped together with path B.
-5. **Is QUIC instead of WireGuard acceptable?** This decides A1 vs A2/A3. See
-   [daemon-options.md](daemon-options.md).
+5. ~~Is QUIC instead of WireGuard acceptable?~~ Built on iroh (QUIC); revisit
+   only if WireGuard interop becomes a requirement.
+9. **The homelab `toolnet-relay` container** (plain HTTP on :3340, LAN only,
+   unused since port forwards are off the table): remove it, or keep it for
+   LAN-only use? Its homelab repo files are uncommitted.
 6. **Relays:** public relays only, or a ToolDbRelay per tailnet (durability,
    fewer metadata leaks, and it could host `derper` alongside)?
 7. **Multiple tailnets / sharing a node** with another owner (Tailscale's

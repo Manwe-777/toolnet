@@ -1,36 +1,54 @@
 # Roadmap
 
-## M0: control plane proof of concept (Linux, no NAT traversal)
+## Done (2026-11-02)
 
-Goal: show that tool-db can replace the coordination server.
+- **Connectivity spike** (`spike/`): Rust + iroh + TUN. 640 Mbit/s direct in
+  namespaces; laptop on LTE <-> homelab through a relay; network switches
+  migrate in ~2 s.
+- **M0, control plane on tool-db** (`daemon/`): native ToolDB values over
+  Nostr, NIP-44 group encryption compatible with JS tool-db (tested both ways),
+  owner create / approve / remove with group key rotation, live netmap, node
+  info publishing, no dependency on iroh's address lookup. Works over public
+  Nostr relays (laptop + homelab connected ~10 s after approval).
+- **Subnet routes**: device advertises, owner approves, peers install routes;
+  forwarding + masquerade on the router; anti-spoofing on received packets.
+- **Exit nodes**: same approval model; policy routing on the client keeps
+  iroh's UDP and the relays out of the tunnel.
+- **MagicDNS**: `<member>.<domain>` served on the tailnet IP, split DNS via
+  systemd-resolved.
+- **systemd unit** with only `CAP_NET_ADMIN` and `CAP_NET_BIND_SERVICE`.
 
-- Node CLI `toolnet` using tool-db: `init` (owner), `up`, `approve`, `remove`, `status`.
-- Kernel WireGuard via `wg`/`ip` commands. Peers must be reachable directly
-  (same LAN, or public IP / port forward).
-- Data model from [data-model.md](data-model.md): owner-assigned IPs, group
-  key, rotation on removal.
-- Static `/etc/hosts`-style names (no resolver yet).
-- **Done when** 3 machines join, ping each other by tailnet IP, one gets removed
-  and loses access, and an endpoint change propagates.
+## Next
 
-## M1: connectivity spike (A1: Rust + iroh)
+1. **Hole punching on LTE.** Both NATs measure as consistent, yet iroh never
+   got a direct path from the LTE hotspot to home. Run `tools/punchtest.py`
+   (see spike/README.md) to tell NAT filtering from an iroh issue.
+2. **Real-world run with TUN**: laptop + homelab as services, exit node
+   through the homelab from LTE.
+3. **Owner app**: a PWA (like homelab-monitor's) holding the owner key, with
+   approve / remove / routes. JS tool-db compatibility is already tested.
+   Pairing by QR code: the device shows its npub, the owner scans it.
+4. **Owner key safety**: NIP-46 remote signer or the PWA, instead of
+   `owner.key` on a laptop.
+5. **IPv6** inside the tailnet (ULA per network), and IPv6 exit traffic.
+6. **Exit node DNS**: send all DNS through the exit node while it's in use
+   (today only the tailnet domain is split; other queries use local DNS).
+7. **ACLs** (who may reach whom), evaluated on each device from the
+   owner-signed policy.
+8. **Relay**: a toolnet-owned TLS CA for relays reached by IP (decisions.md),
+   and relays listed in the network config.
+9. **Mobile**: Android VpnService / iOS NetworkExtension shells around the Rust
+   core.
+10. **Performance**: batch TUN reads, GSO, multiple queues (debug build does
+    ~110 Mbit/s in namespaces, release ~600).
 
-- Rust daemon: iroh endpoint per device, TUN via tun-rs, IP packets as QUIC datagrams.
-  Control plane via nostr-sdk, compatible with JS tool-db (round trip tests).
-- `node` info carries the iroh endpoint id and relay URL instead of raw endpoints.
-- **Done when** two machines behind different NATs connect, and an exit node works.
-- Status 2026-11-02: `spike/` works across network namespaces on the direct path
-  (640 Mbit/s release). Laptop on LTE <-> homelab works via relay, migrates
-  networks in ~2 s, no direct path through carrier NAT (see spike/README.md).
-  Pending: self-hosted relay, relay throughput, exit node.
+## Known issues
 
-## M2: daily driver
-
-- Exit node and subnet router approval in the owner flow.
-- DNS: MagicDNS names, upstream nameservers, split DNS.
-- Relay choice settled (own `derper` or public).
-- Owner admin UI (PWA, like homelab-monitor's app).
-
-## M3: mobile
-
-- Depends on open question 3 in [decisions.md](decisions.md).
+- iroh advertises every local interface for hole punching, including Docker
+  bridges, and caps the list at 32. On the homelab the last bridge address is
+  dropped. Harmless, but iroh has no option to filter them yet.
+- Some networks' DNS blocks `dns.iroh.link`. toolnet doesn't use iroh's
+  address lookup, so this only matters for the spike.
+- Docker's iptables `FORWARD` policy can drop routed traffic on a Docker host;
+  toolnet's nft accept rule doesn't override another table's drop. Needs a
+  `DOCKER-USER` rule on such hosts.
