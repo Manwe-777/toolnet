@@ -13,6 +13,7 @@ dirs = "7.0.0"
 getrandom = "0.3"
 if-addrs = "0.15.0"
 iroh = "1.4"
+libc = "0.2.191"
 n0-watcher = "1"
 nostr = { version = "0.45", features = ["nip44", "rand", "std"] }
 nostr-sdk = "0.45.4"

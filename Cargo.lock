@@ -3972,6 +3972,7 @@ dependencies = [
  "getrandom 0.3.4",
  "if-addrs",
  "iroh",
+ "libc",
  "n0-watcher",
  "nostr",
  "nostr-sdk",

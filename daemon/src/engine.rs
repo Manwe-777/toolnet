@@ -404,6 +404,43 @@ impl Engine {
     }
 
     /// Status lines for each desired peer
+    /// While a peer is only reachable through a relay, keep opening our NAT
+    /// toward its public addresses with low-TTL packets (see punch.rs)
+    pub fn spawn_punch_assist(&self) {
+        let engine = self.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+            loop {
+                tick.tick().await;
+                let targets: Vec<(String, std::net::SocketAddrV4)> = {
+                    let state = engine.state.read().await;
+                    state
+                        .peers
+                        .values()
+                        .filter(|p| {
+                            let direct = state.conns.get(&p.endpoint).is_some_and(|c| {
+                                c.paths().iter().any(|path| path.is_selected() && !path.is_relay())
+                            });
+                            !direct
+                        })
+                        .flat_map(|p| crate::punch::punch_targets(&p.addrs).into_iter().map(|a| (p.name.clone(), a)))
+                        .collect()
+                };
+                if targets.is_empty() {
+                    continue;
+                }
+                for fd in crate::punch::iroh_sockets(&engine.udp_ports()) {
+                    for (name, dst) in &targets {
+                        if let Err(e) = crate::punch::send_low_ttl(fd, *dst, crate::punch::PUNCH_TTL) {
+                            debug!(peer = %name, %dst, "punch: {e}");
+                        }
+                    }
+                }
+                debug!(?targets, "low-TTL punch");
+            }
+        });
+    }
+
     pub async fn status(&self) -> Vec<String> {
         let state = self.state.read().await;
         let mut lines: Vec<String> = state

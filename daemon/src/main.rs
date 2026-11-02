@@ -7,6 +7,7 @@ mod dns;
 mod engine;
 mod model;
 mod os;
+mod punch;
 mod tooldb;
 
 use std::{
@@ -542,6 +543,9 @@ async fn up(state: &State, opts: UpOpts) -> Result<()> {
     })
     .await?;
     info!(device = %keys.public_key().to_bech32()?, endpoint = %engine.id(), "toolnet up");
+    if !offline {
+        engine.spawn_punch_assist();
+    }
     let db = Db::connect(&cfg.relays).await?;
 
     // Our node info, kept current from the endpoint's addresses
