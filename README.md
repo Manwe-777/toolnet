@@ -58,6 +58,7 @@ Usage details and the exact data format are in [daemon/README.md](daemon/README.
 
 | Path | What |
 |---|---|
+| [app/](app) | Owner app (PWA): approve devices by QR scan, remove them (key rotation), routes |
 | [daemon/](daemon) | The `toolnet` binary (Rust): tool-db client, crypto, control plane, iroh + TUN engine, DNS |
 | [tests/](tests) | End-to-end tests: local ToolDB relay, JS compatibility, namespaces with real TUN traffic, subnet routes, exit node |
 | [spike/](spike) | The first connectivity spike and its field results (LAN, LTE, relays) |
@@ -86,6 +87,7 @@ tests/e2e-local.sh           # owner + 2 devices on a local ToolDB relay: join, 
 tests/compat.sh              # JS tool-db reads Rust's data; Rust accepts a JS approval
 tests/netns-tun.sh           # TUN traffic in namespaces, MagicDNS, subnet route on/off
 tests/netns-exit.sh          # exit node: internet only through the exit, peer traffic bypasses
+tests/app-compat.sh          # owner app logic (JS) drives Rust devices: approve by QR payload, routes, remove
 tests/netns-roam.sh          # network switch: reconnect to Nostr at once, republish, keep following
 ```
 
