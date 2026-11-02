@@ -40,15 +40,20 @@
 
 ## Next
 
-1. **Verify the fast reconnect on a real network switch** (namespace test
-   passes): the punch waited ~3 min for dead Nostr websockets after the switch.
-   Also punch only after both sides have published fresh addresses, and
-   exchange punch timing over Nostr like HyperDHT does over its DHT.
+1. **Reliable hole punching from LTE.** The low-TTL trick got one direct
+   path (100-200 ms instead of ~410), but the next session stayed relayed for
+   7 min. In place now, untested on LTE: punch roles (low / full TTL) swap
+   every 15 s, and "poke" connections make iroh start a punching round right
+   after the NATs should be open (iroh itself retries only every 60 s while
+   relayed). Next LTE session: run with `RUST_LOG=...,iroh::_events=debug` to
+   see iroh's NAT traversal rounds and candidate addresses. If iroh still
+   can't, punch on toolnet's side and hand iroh the working address.
 2. **systemd service on both machines**, so MagicDNS registers with resolved
    and nothing needs `setcap` by hand.
-3. **Owner app**: a PWA (like homelab-monitor's) holding the owner key, with
-   approve / remove / routes. JS tool-db compatibility is already tested.
-   Pairing by QR code: the device shows its npub, the owner scans it.
+3. **Owner app** (in progress, `app/`): a PWA holding the owner key, with
+   approve by QR scan / remove / routes. Devices show their QR with
+   `toolnet id --qr`. Needs HTTPS (camera) when served to the phone.
+   Then the phone as a device: an Android VpnService shell around the core.
 4. **Owner key safety**: NIP-46 remote signer or the PWA, instead of
    `owner.key` on a laptop.
 5. **IPv6** inside the tailnet (ULA per network), and IPv6 exit traffic.
@@ -77,6 +82,8 @@
   `0.0.0.0:53` (the homelab). That host's own lookups of tailnet names fail;
   other devices are unaffected.
 - After a network switch the Nostr websockets used to take 1-3 min to time
-  out. Now a local address change (or a failed publish) reconnects at once.
+  out. Now a local address change (or a failed publish) recreates the relay
+  connections at once (measured on LTE: switch noticed instantly, new address
+  published ~30 s later with the first, racy version; < 5 s in namespaces now).
 - `setcap` is lost on every rebuild: run from a copy (`~/.local/bin/toolnet`)
   and re-grant only when replacing it.
