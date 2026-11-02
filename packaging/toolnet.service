@@ -1,14 +1,12 @@
-# toolnet as a system service.
+# toolnet as a system service. Install or update with packaging/install.sh:
 #
-#   sudo install -m 755 target/release/toolnet /usr/local/bin/toolnet
-#   sudo install -m 644 packaging/toolnet.service /etc/systemd/system/
-#   sudo TOOLNET_STATE=/var/lib/toolnet toolnet init --owner npub1... --net home
-#   sudo systemctl enable --now toolnet
+#   sudo packaging/install.sh target/release/toolnet --state-from <dir> \
+#        --args "--exit-node homelab"
 #
-# Extra flags (exit node, routes) go in a drop-in:
-#   sudo systemctl edit toolnet
+# Flags for `toolnet up` live in a drop-in (toolnet.service.d/args.conf);
+# more logging: `sudo systemctl edit toolnet` and add
 #   [Service]
-#   Environment=TOOLNET_ARGS=--exit-node homelab
+#   Environment=RUST_LOG=info,toolnet=debug
 #
 # Runs as root, but with every capability dropped except network admin
 # (TUN, routes, nft, sysctl) and binding port 53 (MagicDNS). Root is what
@@ -21,6 +19,7 @@ Wants=network-online.target
 [Service]
 Environment=TOOLNET_STATE=/var/lib/toolnet
 Environment=TOOLNET_ARGS=
+Environment=RUST_LOG=info
 ExecStart=/usr/local/bin/toolnet up $TOOLNET_ARGS
 Restart=on-failure
 RestartSec=5
