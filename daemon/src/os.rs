@@ -151,12 +151,35 @@ pub fn enable_router(dev: &str, tailnet: &Cidr) -> Result<()> {
     if !out.status.success() {
         bail!("nft: {}", String::from_utf8_lossy(&out.stderr).trim());
     }
+    iptables_forward(Some(dev));
     info!(%tailnet, "routing for the tailnet: forwarding + masquerade (nft table {NFT_TABLE})");
     Ok(())
 }
 
 pub fn disable_router() {
     let _ = run("nft", &["delete", "table", "ip", NFT_TABLE]);
+    iptables_forward(None);
+}
+
+const IPT_CHAIN: &str = "TOOLNET-FORWARD";
+
+/// An accept in our nft table can't override a drop elsewhere: Docker sets
+/// iptables' FORWARD policy to DROP. Like Tailscale, jump to our own chain at
+/// the top of FORWARD when iptables is there. `None` removes it.
+fn iptables_forward(dev: Option<&str>) {
+    let ipt = |args: &[&str]| run("iptables", &[&["-w"], args].concat());
+    while ipt(&["-D", "FORWARD", "-j", IPT_CHAIN]).is_ok() {}
+    let _ = ipt(&["-F", IPT_CHAIN]);
+    let _ = ipt(&["-X", IPT_CHAIN]);
+    let Some(dev) = dev else { return };
+    let added = ipt(&["-N", IPT_CHAIN])
+        .and_then(|_| ipt(&["-A", IPT_CHAIN, "-i", dev, "-j", "ACCEPT"]))
+        .and_then(|_| ipt(&["-A", IPT_CHAIN, "-o", dev, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"]))
+        .and_then(|_| ipt(&["-I", "FORWARD", "1", "-j", IPT_CHAIN]));
+    match added {
+        Ok(()) => info!("iptables: {IPT_CHAIN} accepts forwarded tailnet traffic"),
+        Err(e) => info!("no iptables FORWARD rules added ({e:#})"),
+    }
 }
 
 /// Using an exit node: a default route in toolnet's table, except for our own

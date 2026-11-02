@@ -55,6 +55,8 @@ for n in alpha exit; do
   "$BIN" --state "$W/owner" owner approve "$("$BIN" --state "$W/$n" id | awk '/^hex/{print $2}')" --name "$n"
 done
 
+# Like a Docker host: iptables FORWARD policy DROP
+inns exit iptables -P FORWARD DROP
 inns exit "$BIN" --state "$W/exit" up --offline --advertise-exit-node > "$W/exit.log" 2>&1 & pids+=($!)
 inns alpha "$BIN" --state "$W/alpha" up --offline --exit-node exit > "$W/alpha.log" 2>&1 & pids+=($!)
 wait_for "$W/alpha.log" "connected peer=exit" 30
