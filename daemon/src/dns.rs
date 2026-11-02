@@ -97,7 +97,7 @@ pub async fn serve(ip: Ipv4Addr, names: Names) -> Result<()> {
 
 /// Registers the resolver with systemd-resolved as split DNS for the domain
 pub fn register_resolved(dev: &str, ip: Ipv4Addr, domain: &str) {
-    let run = |args: &[&str]| std::process::Command::new("resolvectl").args(args).output();
+    let run = |args: &[&str]| crate::os::command("resolvectl").args(args).output();
     let ok = |o: std::io::Result<std::process::Output>| o.map(|o| o.status.success()).unwrap_or(false);
     if ok(run(&["dns", dev, &ip.to_string()])) && ok(run(&["domain", dev, &format!("~{domain}")])) {
         info!("systemd-resolved: *.{domain} -> {ip}");
@@ -107,7 +107,7 @@ pub fn register_resolved(dev: &str, ip: Ipv4Addr, domain: &str) {
 }
 
 pub fn unregister_resolved(dev: &str) {
-    let _ = std::process::Command::new("resolvectl").args(["revert", dev]).output();
+    let _ = crate::os::command("resolvectl").args(["revert", dev]).output();
 }
 
 #[cfg(test)]

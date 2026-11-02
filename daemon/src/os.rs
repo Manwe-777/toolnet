@@ -23,8 +23,20 @@ pub fn inherit_capabilities() {
     }
 }
 
+/// A system command by name, also looked up in the sbin directories that
+/// Debian and others leave off a user's PATH (nft lives there)
+pub fn command(cmd: &str) -> Command {
+    let path = std::env::var("PATH").unwrap_or_default();
+    let found = path
+        .split(':')
+        .chain(["/usr/sbin", "/sbin", "/usr/bin", "/bin"])
+        .map(|d| std::path::Path::new(d).join(cmd))
+        .find(|p| p.is_file());
+    Command::new(found.as_deref().unwrap_or(std::path::Path::new(cmd)))
+}
+
 fn run(cmd: &str, args: &[&str]) -> Result<()> {
-    let out = Command::new(cmd).args(args).output().with_context(|| format!("running {cmd}"))?;
+    let out = command(cmd).args(args).output().with_context(|| format!("running {cmd}"))?;
     if !out.status.success() {
         bail!("{cmd} {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim());
     }
@@ -93,7 +105,7 @@ impl Routes {
 
 /// Whether the main table has a route for exactly this prefix (it wins)
 fn local_route(c: &Cidr) -> bool {
-    Command::new("ip")
+    command("ip")
         .args(["route", "show", "table", "main", "exact", &c.to_string()])
         .output()
         .map(|o| o.status.success() && !o.stdout.is_empty())
@@ -127,7 +139,7 @@ pub fn enable_router(dev: &str, tailnet: &Cidr) -> Result<()> {
             }}
         }}"
     );
-    let mut child = Command::new("nft")
+    let mut child = command("nft")
         .args(["-f", "-"])
         .stdin(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
