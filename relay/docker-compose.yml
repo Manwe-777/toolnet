@@ -1,11 +1,11 @@
 # toolnet relay: a self-hosted iroh-relay for toolnet peers.
 #
-# Portable base. Host-specific paths (config, certificate) go in an override:
+# Portable base. Host-specific settings (the config file) go in an override:
 #   docker compose -f docker-compose.yml -f my.override.yml up -d --build
 #
-# Ports, all of which must be reachable from the internet:
-#   3340/tcp  HTTPS relay (WebSocket). Peers use https://<hostname>:3340
-#   7842/udp  QUIC address discovery: tells peers their public address, for hole punching
+# One port, forwarded from the router: 3340/tcp, plain HTTP (WebSocket).
+# Peers use http://<public ip>:3340. See relay.example.toml for why plain
+# HTTP is acceptable.
 services:
   relay:
     build: .
@@ -14,10 +14,8 @@ services:
     restart: unless-stopped
     volumes:
       - ./relay.toml:/config/relay.toml:ro
-      - ./certs:/certs:ro
     ports:
       - "3340:3340/tcp"
-      - "7842:7842/udp"
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]

@@ -1,19 +1,19 @@
 # iroh-relay config for a toolnet relay. Copy to relay.toml (or point an
-# override at your own) and fill in the certificate paths and the allowlist.
+# override at your own) and fill in the allowlist.
+#
+# Plain HTTP, reached by IP: http://<public ip>:3340. No domain, DNS record or
+# certificate needed. This is safe because peer traffic is end to end
+# encrypted (QUIC between endpoints), so the relay only forwards ciphertext.
+# What plain HTTP gives up: network observers can see which endpoint ids use
+# the relay, and QUIC address discovery is off (it needs TLS). The plan for
+# the daemon is TLS with a tailnet-owned CA (docs/decisions.md).
+#
+# If the public IP changes, the relay URL changes. In toolnet the device
+# running the relay publishes its current URL in its tool-db `node` info.
 
-# Plain HTTP only serves the captive-portal check when TLS is on. Not published.
-http_bind_addr = "[::]:8080"
-enable_quic_addr_discovery = true
+http_bind_addr = "[::]:3340"
 enable_metrics = true
-metrics_bind_addr = "[::]:9090"
-
-[tls]
-https_bind_addr = "[::]:3340"
-quic_bind_addr = "[::]:7842"
-# Re-reads the files periodically, so an external renewer (NPM, certbot) works
-cert_mode = "Reloading"
-manual_cert_path = "/certs/fullchain.pem"
-manual_key_path = "/certs/privkey.pem"
+metrics_bind_addr = "[::]:9090"     # not published
 
 # Only these endpoint ids may relay. Everyone else is refused, so the relay
 # can't be used as a free relay by strangers. Later: `access.http` pointed at

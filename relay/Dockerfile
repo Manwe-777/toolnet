@@ -8,6 +8,5 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/bin/iroh-relay /usr/local/bin/iroh-relay
-# Runs as root inside the container only to read certificate files that are
-# root-only on the host. compose drops every capability and mounts read-only.
+USER 65534:65534
 ENTRYPOINT ["iroh-relay", "--config-path", "/config/relay.toml"]
