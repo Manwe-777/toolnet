@@ -23,6 +23,46 @@ pub const ALPN: &[u8] = b"toolnet/0";
 /// Below the smallest QUIC datagram size we expect on any path (relay included)
 const TUN_MTU: u16 = 1150;
 
+/// An IPv4 prefix
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Cidr {
+    pub addr: Ipv4Addr,
+    pub len: u8,
+}
+
+impl Cidr {
+    pub fn host(ip: Ipv4Addr) -> Self {
+        Self { addr: ip, len: 32 }
+    }
+
+    fn mask(&self) -> u32 {
+        u32::MAX.checked_shl(32 - self.len as u32).unwrap_or(0)
+    }
+
+    pub fn contains(&self, ip: Ipv4Addr) -> bool {
+        u32::from(ip) & self.mask() == u32::from(self.addr) & self.mask()
+    }
+}
+
+impl FromStr for Cidr {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self> {
+        let (ip, len) = s.split_once('/').unwrap_or((s, "32"));
+        let len: u8 = len.parse()?;
+        anyhow::ensure!(len <= 32, "bad prefix length in {s}");
+        let addr: Ipv4Addr = ip.parse()?;
+        // Normalize: 192.168.1.7/24 -> 192.168.1.0/24
+        let net = Self { addr, len };
+        Ok(Self { addr: Ipv4Addr::from(u32::from(addr) & net.mask()), len })
+    }
+}
+
+impl std::fmt::Display for Cidr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.addr, self.len)
+    }
+}
+
 /// A peer as the control plane describes it
 #[derive(Debug, Clone, PartialEq)]
 pub struct Peer {
@@ -31,6 +71,16 @@ pub struct Peer {
     pub endpoint: EndpointId,
     pub addrs: Vec<SocketAddr>,
     pub relay: Option<RelayUrl>,
+    /// Extra prefixes routed to this peer: approved by the owner AND
+    /// advertised by the peer (subnet router, or 0.0.0.0/0 for an exit node)
+    pub routes: Vec<Cidr>,
+}
+
+impl Peer {
+    /// Whether the peer may send us packets from this source address
+    fn may_send_from(&self, src: Ipv4Addr) -> bool {
+        src == self.ip || self.routes.iter().any(|r| r.contains(src))
+    }
 }
 
 impl Peer {
@@ -61,8 +111,15 @@ struct State {
     conns: HashMap<EndpointId, Connection>,
     /// Dialer tasks (we only dial peers with a higher id than ours)
     dialers: HashMap<EndpointId, (Peer, JoinHandle<()>)>,
-    /// Tailnet IP -> endpoint id
-    routes: HashMap<Ipv4Addr, EndpointId>,
+    /// Prefix -> endpoint id, longest prefix first
+    routes: Vec<(Cidr, EndpointId)>,
+}
+
+impl State {
+    fn route(&self, dst: Ipv4Addr) -> Option<&Connection> {
+        let (_, id) = self.routes.iter().find(|(c, _)| c.contains(dst))?;
+        self.conns.get(id)
+    }
 }
 
 #[derive(Clone)]
@@ -132,7 +189,7 @@ impl Engine {
                 }
                 let dst = Ipv4Addr::new(packet[16], packet[17], packet[18], packet[19]);
                 let state = state.read().await;
-                let Some(conn) = state.routes.get(&dst).and_then(|id| state.conns.get(id)) else {
+                let Some(conn) = state.route(dst) else {
                     continue;
                 };
                 if let Err(e) = conn.send_datagram(bytes::Bytes::copy_from_slice(packet)) {
@@ -180,7 +237,14 @@ impl Engine {
             state.dialers.insert(*id, (peer.clone(), task));
         }
 
-        state.routes = wanted.values().map(|p| (p.ip, p.endpoint)).collect();
+        let mut routes: Vec<(Cidr, EndpointId)> = wanted
+            .values()
+            .flat_map(|p| {
+                std::iter::once((Cidr::host(p.ip), p.endpoint)).chain(p.routes.iter().map(|r| (*r, p.endpoint)))
+            })
+            .collect();
+        routes.sort_by(|a, b| b.0.len.cmp(&a.0.len).then(a.0.cmp(&b.0)));
+        state.routes = routes;
         state.peers = wanted;
     }
 
@@ -266,6 +330,18 @@ impl Engine {
                 }
                 continue;
             }
+            // Anti-spoofing: a peer may only send from its own tailnet IP or
+            // the prefixes it routes
+            if packet.len() >= 20 && packet[0] >> 4 == 4 {
+                let src = Ipv4Addr::new(packet[12], packet[13], packet[14], packet[15]);
+                let allowed = self.state.read().await.peers.get(&id).is_some_and(|p| p.may_send_from(src));
+                if !allowed {
+                    debug!(peer = %name, %src, "dropping packet with a source this peer may not use");
+                    continue;
+                }
+            } else {
+                continue;
+            }
             let tun = self.tun.read().await.clone();
             if let Some(tun) = tun {
                 if let Err(e) = tun.send(&packet).await {
@@ -310,6 +386,15 @@ impl Engine {
         });
     }
 
+    /// Prefixes routed to peers, beyond their own tailnet IPs (for OS routes)
+    pub async fn routed_prefixes(&self) -> Vec<Cidr> {
+        let state = self.state.read().await;
+        let mut out: Vec<Cidr> = state.peers.values().flat_map(|p| p.routes.iter().copied()).collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
     /// Status lines for each desired peer
     pub async fn status(&self) -> Vec<String> {
         let state = self.state.read().await;
@@ -343,6 +428,22 @@ fn path_desc(conn: &Connection) -> String {
             format!("{kind} {:?} rtt {:?}", p.remote_addr(), p.rtt())
         })
         .unwrap_or_else(|| "no path".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cidr() {
+        let c: Cidr = "192.168.77.9/24".parse().unwrap();
+        assert_eq!(c.to_string(), "192.168.77.0/24");
+        assert!(c.contains("192.168.77.200".parse().unwrap()));
+        assert!(!c.contains("192.168.78.1".parse().unwrap()));
+        let all: Cidr = "0.0.0.0/0".parse().unwrap();
+        assert!(all.contains("8.8.8.8".parse().unwrap()));
+        assert_eq!("10.0.0.1".parse::<Cidr>().unwrap().len, 32);
+    }
 }
 
 pub fn parse_endpoint_id(s: &str) -> Result<EndpointId> {

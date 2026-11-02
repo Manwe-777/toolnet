@@ -5,6 +5,7 @@ mod control;
 mod crypto;
 mod engine;
 mod model;
+mod os;
 mod tooldb;
 
 use std::{
@@ -86,6 +87,10 @@ enum Cmd {
         /// iroh relay URL to use instead of n0's public relays (repeatable)
         #[arg(long = "iroh-relay")]
         iroh_relays: Vec<iroh::RelayUrl>,
+        /// Offer to route these prefixes for the tailnet (comma separated),
+        /// e.g. a LAN behind this machine. The owner must approve them
+        #[arg(long, value_delimiter = ',')]
+        advertise_routes: Vec<engine::Cidr>,
     },
 }
 
@@ -112,6 +117,11 @@ enum OwnerCmd {
     },
     /// Remove a device (by name or key) and rotate the group key
     Remove { device: String },
+    /// Set the prefixes a device may route (none to clear), e.g. its LAN
+    Routes {
+        device: String,
+        routes: Vec<engine::Cidr>,
+    },
     /// List members and what they last published
     List,
 }
@@ -239,8 +249,8 @@ async fn main() -> Result<()> {
         }
         Cmd::Owner { cmd } => owner(&state, cmd).await,
         Cmd::Status => status(&state).await,
-        Cmd::Up { no_tun, dev, offline, bind, iroh_relays } => {
-            up(&state, no_tun, dev, offline, bind, iroh_relays).await
+        Cmd::Up { no_tun, dev, offline, bind, iroh_relays, advertise_routes } => {
+            up(&state, no_tun, dev, offline, bind, iroh_relays, advertise_routes).await
         }
     }
 }
@@ -326,7 +336,7 @@ async fn owner(state: &State, cmd: OwnerCmd) -> Result<()> {
                 Some(ip) => ip,
                 None => view.config.next_free_ip()?,
             };
-            view.config.members.insert(device.to_hex(), Member { name: name.clone(), ip, added_at: now() });
+            view.config.members.insert(device.to_hex(), Member { name: name.clone(), ip, added_at: now(), routes: vec![] });
             view.config.updated_at = now();
             // Same epoch: only the new member's group key is new
             let wrapped = model::wrap_group_key(&keys, &device, &view.group, view.epoch)?;
@@ -353,6 +363,24 @@ async fn owner(state: &State, cmd: OwnerCmd) -> Result<()> {
             let epoch = view.epoch + 1;
             publish_network(&db, &keys, &cfg.net, epoch, &crypto::new_group_key(), &view.config).await?;
             println!("Removed {} ({}); group key rotated to epoch {epoch}", member.name, member.ip);
+            Ok(())
+        }
+        OwnerCmd::Routes { device, routes } => {
+            let (keys, cfg) = (state.owner_keys()?, state.config()?);
+            let db = Db::connect(&cfg.relays).await?;
+            let mut view = owner_view(&db, &keys, &cfg.net).await?.context("no such network")?;
+            let member = view
+                .config
+                .members
+                .iter_mut()
+                .find(|(k, m)| m.name == device || parse_pubkey(&device).is_ok_and(|p| p.to_hex() == **k))
+                .map(|(_, m)| m)
+                .with_context(|| format!("no member {device}"))?;
+            member.routes = routes.iter().map(|r| r.to_string()).collect();
+            let summary = format!("{}: {:?}", member.name, member.routes);
+            view.config.updated_at = now();
+            db.put(&keys, &model::net_key(&cfg.net), &model::seal(&view.group, view.epoch, &view.config)?).await?;
+            println!("Routes allowed for {summary}");
             Ok(())
         }
         OwnerCmd::List => {
@@ -382,12 +410,17 @@ fn print_view(view: Option<&View>) {
         let node = PublicKey::from_hex(key).ok().and_then(|pk| v.nodes.get(&pk));
         match node {
             Some(n) => println!(
-                "  {:<12} {:<15} {} addrs={:?} relay={}",
+                "  {:<12} {:<15} {} addrs={:?} relay={}{}",
                 m.name,
                 m.ip,
                 n.hostname,
                 n.addrs,
-                n.relay.as_deref().unwrap_or("-")
+                n.relay.as_deref().unwrap_or("-"),
+                if m.routes.is_empty() && n.routes.is_empty() {
+                    String::new()
+                } else {
+                    format!(" routes: allowed={:?} advertised={:?}", m.routes, n.routes)
+                }
             ),
             None => println!("  {:<12} {:<15} (not online yet)", m.name, m.ip),
         }
@@ -426,12 +459,21 @@ fn peers_of(view: &View, me: &PublicKey) -> Vec<Peer> {
         }
         let Some(node) = view.nodes.get(&pk) else { continue };
         let Ok(endpoint) = engine::parse_endpoint_id(&node.endpoint_id) else { continue };
+        // Routed only if the owner allows it AND the device offers it
+        let allowed: Vec<engine::Cidr> = member.routes.iter().filter_map(|r| r.parse().ok()).collect();
+        let routes = node
+            .routes
+            .iter()
+            .filter_map(|r| r.parse::<engine::Cidr>().ok())
+            .filter(|r| allowed.contains(r))
+            .collect();
         peers.push(Peer {
             name: member.name.clone(),
             ip: member.ip,
             endpoint,
             addrs: node.addrs.iter().filter_map(|a| a.parse().ok()).collect(),
             relay: node.relay.as_deref().and_then(|r| r.parse().ok()),
+            routes,
         });
     }
     peers
@@ -444,6 +486,7 @@ async fn up(
     offline: bool,
     bind: Option<SocketAddr>,
     iroh_relays: Vec<iroh::RelayUrl>,
+    advertise_routes: Vec<engine::Cidr>,
 ) -> Result<()> {
     let (keys, cfg) = (state.device_keys()?, state.config()?);
     let id = Identity { device: keys.clone(), owner: parse_pubkey(&cfg.owner)?, net: cfg.net.clone() };
@@ -459,7 +502,9 @@ async fn up(
 
     // Our node info, kept current from the endpoint's addresses
     let endpoint_id = engine.id().to_string();
+    let advertised: Vec<String> = advertise_routes.iter().map(|r| r.to_string()).collect();
     let make_info = move |addr: &iroh::EndpointAddr| NodeInfo {
+        routes: advertised.clone(),
         endpoint_id: endpoint_id.clone(),
         addrs: control::useful_addrs(addr.ip_addrs().copied()).iter().map(|a| a.to_string()).collect(),
         relay: addr.relay_urls().next().map(|r| r.to_string()),
@@ -506,6 +551,8 @@ async fn up(
     }
 
     let mut tun_ip: Option<Ipv4Addr> = None;
+    let mut os_routes = os::Routes::default();
+    let mut router = false;
     let mut last_status = None;
     let mut report = tokio::time::interval(Duration::from_secs(60));
     // Losing membership tears everything down, but only once it lasts: during
@@ -555,6 +602,13 @@ async fn up(
             let (_, prefix) = view.config.prefix()?;
             engine.start_tun(&dev, me.ip, prefix).await?;
             tun_ip = Some(me.ip);
+            if !advertise_routes.is_empty() {
+                let tailnet: engine::Cidr = view.config.ipv4.parse()?;
+                match os::enable_router(&dev, &tailnet) {
+                    Ok(()) => router = true,
+                    Err(e) => warn!("can't route for the tailnet: {e:#}"),
+                }
+            }
         }
         if let (Some(me), Some(ip)) = (me, tun_ip) {
             if me.ip != ip {
@@ -564,6 +618,12 @@ async fn up(
         let peers = peers_of(view, &keys.public_key());
         info!(epoch = view.epoch, peers = ?peers.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), "netmap");
         engine.set_peers(peers).await;
+        if tun_ip.is_some() {
+            os_routes.sync(&dev, &engine.routed_prefixes().await);
+        }
+    }
+    if router {
+        os::disable_router();
     }
     engine.endpoint.close().await;
     Ok(())

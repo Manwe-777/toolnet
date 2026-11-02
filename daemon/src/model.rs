@@ -49,6 +49,10 @@ pub struct Member {
     pub name: String,
     pub ip: Ipv4Addr,
     pub added_at: u64,
+    /// Prefixes the owner allows this member to route (subnets, 0.0.0.0/0
+    /// for an exit node). Only used if the member also advertises them
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -63,6 +67,9 @@ pub struct NodeInfo {
     pub hostname: String,
     pub version: String,
     pub updated_at: u64,
+    /// Prefixes this device offers to route
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routes: Vec<String>,
 }
 
 impl NetConfig {
@@ -202,7 +209,7 @@ mod tests {
         };
         for (k, name) in [(&laptop, "laptop"), (&server, "server")] {
             let ip = config.next_free_ip().unwrap();
-            config.members.insert(k.public_key().to_hex(), Member { name: name.into(), ip, added_at: 0 });
+            config.members.insert(k.public_key().to_hex(), Member { name: name.into(), ip, added_at: 0, routes: vec![] });
         }
         assert_eq!(config.members[&server.public_key().to_hex()].ip, Ipv4Addr::new(10, 213, 0, 2));
 
@@ -219,6 +226,7 @@ mod tests {
             hostname: "s".into(),
             version: "0".into(),
             updated_at: 0,
+            routes: vec![],
         };
         records.insert(rec(&server.public_key(), &node_key(&o, "home"), seal(&g1, 1, &info).unwrap(), 1));
 
