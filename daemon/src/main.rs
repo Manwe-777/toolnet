@@ -657,7 +657,8 @@ async fn up(state: &State, opts: UpOpts) -> Result<()> {
                         warn!("MagicDNS: {e:#}");
                     }
                 });
-                dns::register_resolved(&dev, me.ip, &view.config.dns_domain());
+                let (dev, ip, domain) = (dev.clone(), me.ip, view.config.dns_domain());
+                tokio::task::spawn_blocking(move || dns::register_resolved(&dev, ip, &domain));
                 dns_registered = true;
             }
             if !advertise_routes.is_empty() {
