@@ -1,0 +1,16 @@
+# The owner app, static, on port 8080 inside the container. Put it behind a
+# TLS reverse proxy: the camera (QR scanning) only works over HTTPS.
+#   docker compose up -d --build
+services:
+  app:
+    build: .
+    image: toolnet-app
+    container_name: toolnet-app
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    ports:
+      - "8080:8080"
