@@ -17,11 +17,17 @@ Log decisions here with a date. Update when resuming work.
 | 2026-11-02 | **Relays need no domain, DNS or public CA.** For now: plain HTTP by IP (`http://IP:3340`). Daemon: TLS with a tailnet-owned CA (iroh `ca_tls_config`), the relay reissuing its cert for its current IP. The relay URL is published in tool-db `node` info, so IP changes propagate. | A Let's Encrypt cert needs a domain, so a DNS record, so a fixed IP or DDNS. That's an external requirement toolnet shouldn't have. Peer traffic is E2E encrypted anyway. |
 | 2026-11-02 | **Spike A1 started** in `spike/`: iroh 1.4 + tun-rs works, 640 Mbit/s direct in netns. | Validates Rust + iroh as viable; real NAT test pending. |
 
+| 2026-11-02 | **Daemon stack: Rust + iroh + tun-rs + rust-nostr**, one binary (`daemon/`). | The spike worked; rust-nostr covers NIP-44 and relays. One language for daemon and future mobile cores. |
+| 2026-11-02 | **No iroh address lookup** (pkarr/DNS). Peer addresses and relays come only from tool-db node info. | The LTE hotspot's DNS blocks `dns.iroh.link`; the control plane is the point of the project. |
+| 2026-11-02 | **Implemented data format** (daemon/README.md): `:O.net-N`, `:O.gk-N-D` (also for O itself), `:D.node-O-N`, envelopes `{v, epoch, data/key}`. | The owner key alone recovers the network. Epoch in plaintext lets devices pick the right group key. |
+| 2026-11-02 | **Writes are always newer than anything seen for that key.** | Two approvals in the same second raced: tool-db ties go to the lowest event id, so one approval was lost. Same rule as JS tool-db's `putData`. |
+| 2026-11-02 | **Routes need both sides**: the owner allows a prefix (`owner routes`) AND the device advertises it. Exit node = route 0.0.0.0/0, used only by clients that pick it (`--exit-node`). | Identity-based policy, no implicit trust. Matches Tailscale's model. |
+| 2026-11-02 | **Exit routing without socket marks**: `ip rule` on iroh's UDP source port, bypass rules for relay and Nostr relay IPs, `suppress_prefixlength 0` for local routes. | iroh has no SO_MARK option. Tested in namespaces: peer traffic stays outside the tunnel. |
+| 2026-11-02 | **MagicDNS as split DNS only** (`~<domain>` via systemd-resolved), domain default `<net>.toolnet`. | No DNS takeover, no leaks of tailnet names. Full DNS through an exit node is later work. |
+| 2026-11-02 | **No port forwards on the home router.** | Manuh's call: the homelab doesn't accept inbound connections. Direct paths must come from hole punching; otherwise n0's relays (or a future VPS). |
+
 ## Proposed, not decided
 
-- **Daemon stack:** spike A1 (Rust + iroh + tun-rs + nostr-sdk). Fall back to
-  A2 or A3 if QUIC instead of WireGuard turns out to be a problem. See
-  [daemon-options.md](daemon-options.md).
 - **Signaling kind 21080:** check against tool-db's kind registry and NIP ranges.
   May be unnecessary with iroh, which coordinates hole punching through its relays.
 
