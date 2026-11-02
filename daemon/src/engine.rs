@@ -20,6 +20,9 @@ use tracing::{debug, info, warn};
 use tun_rs::{AsyncDevice, DeviceBuilder};
 
 pub const ALPN: &[u8] = b"toolnet/0";
+/// Short-lived extra connections that only make iroh start a hole punching
+/// round now (see spawn_punch_assist); they carry nothing
+pub const ALPN_POKE: &[u8] = b"toolnet/poke/0";
 /// Below the smallest QUIC datagram size we expect on any path (relay included)
 const TUN_MTU: u16 = 1150;
 
@@ -141,7 +144,7 @@ impl Engine {
         } else {
             builder.relay_mode(RelayMode::Default)
         };
-        builder = builder.secret_key(cfg.secret).alpns(vec![ALPN.to_vec()]);
+        builder = builder.secret_key(cfg.secret).alpns(vec![ALPN.to_vec(), ALPN_POKE.to_vec()]);
         if let Some(bind) = cfg.bind {
             builder = builder.clear_ip_transports().bind_addr(bind)?;
         }
@@ -285,6 +288,11 @@ impl Engine {
                         warn!(peer = %conn.remote_id().fmt_short(), "rejecting unknown endpoint");
                         return conn.close(1u32.into(), b"not a member");
                     }
+                    if conn.alpn() == ALPN_POKE {
+                        // Held open by the other side for a few seconds
+                        let _ = tokio::time::timeout(Duration::from_secs(10), conn.closed()).await;
+                        return;
+                    }
                     engine.run_conn(conn).await;
                 });
             }
@@ -415,6 +423,7 @@ impl Engine {
             let me = engine.id();
             let mut tick = tokio::time::interval(std::time::Duration::from_millis(500));
             let mut last_phase = None;
+            let mut poked = false;
             loop {
                 tick.tick().await;
                 let phase = (crate::now() / crate::punch::PUNCH_PHASE_SECS) % 2 == 1;
@@ -449,6 +458,34 @@ impl Engine {
                 if last_phase != Some(phase) {
                     debug!(?targets, "punching (peer, address, ttl)");
                     last_phase = Some(phase);
+                    poked = false;
+                }
+                // A few seconds into each phase, once the punch packets have
+                // had time to open the NATs, make iroh punch now instead of
+                // on its own (up to a minute) schedule: a new connection
+                // starts a round, and with one from each side both punch
+                if !poked && crate::now() % crate::punch::PUNCH_PHASE_SECS >= 3 {
+                    poked = true;
+                    let relayed: Vec<Peer> = {
+                        let state = engine.state.read().await;
+                        let names: std::collections::BTreeSet<&String> = targets.iter().map(|(n, _, _)| n).collect();
+                        state.peers.values().filter(|p| names.contains(&p.name)).cloned().collect()
+                    };
+                    for peer in relayed {
+                        let endpoint = engine.endpoint.clone();
+                        tokio::spawn(async move {
+                            let poke = tokio::time::timeout(Duration::from_secs(5), endpoint.connect(peer.endpoint_addr(), ALPN_POKE));
+                            match poke.await {
+                                Ok(Ok(conn)) => {
+                                    debug!(peer = %peer.name, "poked iroh to hole punch");
+                                    tokio::time::sleep(Duration::from_secs(4)).await;
+                                    conn.close(0u32.into(), b"");
+                                }
+                                Ok(Err(e)) => debug!(peer = %peer.name, "poke failed: {e:#}"),
+                                Err(_) => debug!(peer = %peer.name, "poke timed out"),
+                            }
+                        });
+                    }
                 }
             }
         });
