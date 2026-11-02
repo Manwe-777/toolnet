@@ -3,6 +3,7 @@
 
 mod control;
 mod crypto;
+mod dns;
 mod engine;
 mod model;
 mod os;
@@ -97,6 +98,9 @@ enum Cmd {
         /// Send all internet traffic through this member (by name)
         #[arg(long)]
         exit_node: Option<String>,
+        /// Don't serve MagicDNS (<member>.<domain> names)
+        #[arg(long)]
+        no_dns: bool,
     },
 }
 
@@ -108,6 +112,9 @@ enum OwnerCmd {
         net: String,
         #[arg(long, default_value = "10.213.0.0/24")]
         ipv4: String,
+        /// MagicDNS domain (default: <net>.toolnet)
+        #[arg(long)]
+        domain: Option<String>,
         #[arg(long = "relay")]
         relays: Vec<String>,
     },
@@ -255,11 +262,11 @@ async fn main() -> Result<()> {
         }
         Cmd::Owner { cmd } => owner(&state, cmd).await,
         Cmd::Status => status(&state).await,
-        Cmd::Up { no_tun, dev, offline, bind, iroh_relays, mut advertise_routes, advertise_exit_node, exit_node } => {
+        Cmd::Up { no_tun, dev, offline, bind, iroh_relays, mut advertise_routes, advertise_exit_node, exit_node, no_dns } => {
             if advertise_exit_node {
                 advertise_routes.push("0.0.0.0/0".parse()?);
             }
-            up(&state, UpOpts { no_tun, dev, offline, bind, iroh_relays, advertise_routes, exit_node }).await
+            up(&state, UpOpts { no_tun, dev, offline, bind, iroh_relays, advertise_routes, exit_node, no_dns }).await
         }
     }
 }
@@ -313,7 +320,7 @@ async fn publish_network(db: &Db, owner: &Keys, net: &str, epoch: u64, group: &S
 
 async fn owner(state: &State, cmd: OwnerCmd) -> Result<()> {
     match cmd {
-        OwnerCmd::Create { net, ipv4, relays } => {
+        OwnerCmd::Create { net, ipv4, domain, relays } => {
             if state.read_secret("owner.key")?.is_none() {
                 state.write_secret("owner.key", &Keys::generate().secret_key().to_secret_hex())?;
             }
@@ -326,7 +333,7 @@ async fn owner(state: &State, cmd: OwnerCmd) -> Result<()> {
             if owner_view(&db, &keys, &net).await?.is_some() {
                 bail!("network {net} already exists for this owner");
             }
-            let config = NetConfig { name: net.clone(), ipv4, members: BTreeMap::new(), updated_at: now() };
+            let config = NetConfig { name: net.clone(), ipv4, members: BTreeMap::new(), updated_at: now(), domain };
             config.prefix()?;
             publish_network(&db, &keys, &net, 1, &crypto::new_group_key(), &config).await?;
             println!("Network {net} created. Owner: {}", keys.public_key().to_bech32()?);
@@ -498,6 +505,7 @@ struct UpOpts {
     iroh_relays: Vec<iroh::RelayUrl>,
     advertise_routes: Vec<engine::Cidr>,
     exit_node: Option<String>,
+    no_dns: bool,
 }
 
 /// IPv4 addresses of the hosts in these URLs (relays we must reach directly)
@@ -522,7 +530,7 @@ async fn resolve_hosts(urls: impl IntoIterator<Item = String>) -> std::collectio
 }
 
 async fn up(state: &State, opts: UpOpts) -> Result<()> {
-    let UpOpts { no_tun, dev, offline, bind, iroh_relays, advertise_routes, exit_node } = opts;
+    let UpOpts { no_tun, dev, offline, bind, iroh_relays, advertise_routes, exit_node, no_dns } = opts;
     let (keys, cfg) = (state.device_keys()?, state.config()?);
     let id = Identity { device: keys.clone(), owner: parse_pubkey(&cfg.owner)?, net: cfg.net.clone() };
     let engine = Engine::start(EngineConfig {
@@ -589,6 +597,8 @@ async fn up(state: &State, opts: UpOpts) -> Result<()> {
     let mut os_routes = os::Routes::default();
     let mut router = false;
     let mut exit_routing: Option<os::ExitRouting> = None;
+    let names = dns::Names::default();
+    let mut dns_registered = false;
     let mut last_status = None;
     let mut report = tokio::time::interval(Duration::from_secs(60));
     // Losing membership tears everything down, but only once it lasts: during
@@ -638,6 +648,16 @@ async fn up(state: &State, opts: UpOpts) -> Result<()> {
             let (_, prefix) = view.config.prefix()?;
             engine.start_tun(&dev, me.ip, prefix).await?;
             tun_ip = Some(me.ip);
+            if !no_dns {
+                let (names, ip) = (names.clone(), me.ip);
+                tokio::spawn(async move {
+                    if let Err(e) = dns::serve(ip, names).await {
+                        warn!("MagicDNS: {e:#}");
+                    }
+                });
+                dns::register_resolved(&dev, me.ip, &view.config.dns_domain());
+                dns_registered = true;
+            }
             if !advertise_routes.is_empty() {
                 let tailnet: engine::Cidr = view.config.ipv4.parse()?;
                 match os::enable_router(&dev, &tailnet) {
@@ -651,6 +671,9 @@ async fn up(state: &State, opts: UpOpts) -> Result<()> {
                 warn!(old = %ip, new = %me.ip, "our tailnet IP changed: restart toolnet to apply");
             }
         }
+        names
+            .set(&view.config.dns_domain(), view.config.members.values().map(|m| (m.name.clone(), m.ip)))
+            .await;
         let peers = peers_of(view, &keys.public_key(), exit_node.as_deref());
         info!(epoch = view.epoch, peers = ?peers.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), "netmap");
         engine.set_peers(peers).await;
@@ -690,6 +713,9 @@ async fn up(state: &State, opts: UpOpts) -> Result<()> {
     }
     if let Some(r) = exit_routing.take() {
         r.disable();
+    }
+    if dns_registered {
+        dns::unregister_resolved(&dev);
     }
     if router {
         os::disable_router();

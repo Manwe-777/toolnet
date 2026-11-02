@@ -41,6 +41,10 @@ pub struct NetConfig {
     /// Device public key (hex) -> member
     pub members: BTreeMap<String, Member>,
     pub updated_at: u64,
+    /// MagicDNS domain: members resolve as `<name>.<domain>`.
+    /// Default `<name>.toolnet`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -73,6 +77,10 @@ pub struct NodeInfo {
 }
 
 impl NetConfig {
+    pub fn dns_domain(&self) -> String {
+        self.domain.clone().unwrap_or_else(|| format!("{}.toolnet", crate::dns::label(&self.name)))
+    }
+
     pub fn prefix(&self) -> Result<(Ipv4Addr, u8)> {
         let (ip, len) = self.ipv4.split_once('/').context("ipv4 must be a CIDR")?;
         Ok((ip.parse()?, len.parse()?))
@@ -206,6 +214,7 @@ mod tests {
             ipv4: "10.213.0.0/24".into(),
             members: BTreeMap::new(),
             updated_at: 0,
+            domain: None,
         };
         for (k, name) in [(&laptop, "laptop"), (&server, "server")] {
             let ip = config.next_free_ip().unwrap();

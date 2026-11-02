@@ -60,6 +60,16 @@ wait_for "$W/router.log" "routing for the tailnet" 10
 echo "=== tailnet ping alpha -> router (10.213.0.2)"
 inns alpha ping -c 3 -i 0.2 -W 2 10.213.0.2 | tail -2
 
+echo "=== MagicDNS: alpha resolves router.home.toolnet on its own tailnet IP"
+inns alpha python3 -c '
+import socket, struct
+q = b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00" + b"".join(bytes([len(l)]) + l.encode() for l in "router.home.toolnet".split(".")) + b"\x00\x00\x01\x00\x01"
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(2)
+s.sendto(q, ("10.213.0.1", 53)); r, _ = s.recvfrom(512)
+ip = ".".join(map(str, r[-4:])); assert r[3] & 15 == 0 and ip == "10.213.0.2", (r[3] & 15, ip)
+print("  router.home.toolnet ->", ip)
+'
+
 echo "=== TCP alpha -> router, 50 MB"
 inns router python3 -c '
 import socket, time
