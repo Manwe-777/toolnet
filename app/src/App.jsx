@@ -7,6 +7,7 @@ import NetworkView from "./components/NetworkView";
 import AddDevice from "./components/AddDevice";
 import MemberView from "./components/MemberView";
 import Settings from "./components/Settings";
+import Networks from "./components/Networks";
 
 const REFRESH_MS = 30000;
 
@@ -17,7 +18,8 @@ function App() {
   const [error, setError] = useState("");
   const [view, setView] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [screen, setScreen] = useState({ name: "net" });
+  // No network picked yet: start on the list, never on a guessed name
+  const [screen, setScreen] = useState(() => ({ name: getNet() ? "net" : "networks" }));
   const [flash, setFlash] = useState("");
   const loadId = useRef(0);
 
@@ -40,7 +42,7 @@ function App() {
   }, [secretKey]);
 
   const reload = useCallback(async () => {
-    if (!db) return;
+    if (!db || !net) return;
     const id = ++loadId.current;
     setLoading(true);
     try {
@@ -54,7 +56,7 @@ function App() {
 
   // Load now, then every so often while visible
   useEffect(() => {
-    if (!db) return;
+    if (!db || !net) return;
     setView(null);
     reload();
     const timer = setInterval(() => document.visibilityState === "visible" && reload(), REFRESH_MS);
@@ -104,20 +106,24 @@ function App() {
     );
   }
 
+  const openNet = (name) => {
+    saveNet(name);
+    setNet(name);
+    setScreen({ name: "net" });
+  };
+
   if (screen.name === "settings") {
     return (
       <Settings
         secretKey={secretKey}
-        net={net}
-        onNet={(name) => {
-          saveNet(name);
-          setNet(name);
-          setScreen({ name: "net" });
-        }}
         onSignOut={signOut}
-        onBack={() => setScreen({ name: "net" })}
+        onBack={() => setScreen({ name: net ? "net" : "networks" })}
       />
     );
+  }
+
+  if (screen.name === "networks" || !net) {
+    return <Networks db={db} current={net} onOpen={openNet} onSettings={() => setScreen({ name: "settings" })} />;
   }
 
   if (screen.name === "add" && view?.status === "ok") {
@@ -161,6 +167,7 @@ function App() {
       onAdd={() => setScreen({ name: "add" })}
       onMember={(device) => setScreen({ name: "member", device })}
       onSettings={() => setScreen({ name: "settings" })}
+      onNetworks={() => setScreen({ name: "networks" })}
     />
   );
 }

@@ -185,7 +185,29 @@ export function findMember(config, nameOrKey) {
 /**
  * `toolnet owner create`: a new network at epoch 1
  */
+/** Network names: they end up in tool-db keys (no dots) and DNS names */
+export const NET_NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
+
+/**
+ * Every network this owner key has published (its `net-<name>` keys), with
+ * what the list needs. Asks the relays for this owner's toolnet values only
+ * @returns {Promise<Array<{ name: string, status: string, epoch?: number, ipv4?: string, members?: number }>>}
+ */
+export async function listNetworks(db, timeoutMs = 3000) {
+  const keys = await db.queryKeys(netKey(""), true, timeoutMs);
+  const names = [...new Set(keys.map((k) => k.slice(k.indexOf(".net-") + 5)).filter(Boolean))];
+  const nets = await Promise.all(
+    names.map(async (name) => {
+      const view = await loadNetwork(db, name, { withNodes: false });
+      if (view.status !== "ok") return { name, status: view.status, epoch: view.epoch };
+      return { name, status: "ok", epoch: view.epoch, ipv4: view.config.ipv4, members: Object.keys(view.config.members).length };
+    })
+  );
+  return nets.filter((n) => n.status !== "none").sort((a, b) => a.name.localeCompare(b.name));
+}
+
 export async function createNetwork(db, net, { ipv4 = DEFAULT_IPV4, domain } = {}) {
+  if (!NET_NAME.test(net)) throw new Error("Network names are lowercase letters, digits and dashes");
   const existing = await loadNetwork(db, net, { withNodes: false });
   if (existing.status === "ok") throw new Error(`Network ${net} already exists for this owner`);
   if (existing.status === "locked") throw new Error(`Network ${net} exists but this key can't open it`);

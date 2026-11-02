@@ -102,6 +102,7 @@ pub async fn publish_node(
     let mut last: Option<(u64, NodeInfo)> = None;
     loop {
         let mut failed = false;
+        let mut published = false;
         let (status, view) = views.borrow_and_update().clone();
         let info = infos.borrow_and_update().clone();
         if let (Status::Member, Some(view)) = (status, view) {
@@ -114,6 +115,7 @@ pub async fn publish_node(
                     Ok(_) => {
                         info!(addrs = ?info.addrs, relay = ?info.relay, epoch = view.epoch, "published node info");
                         last = Some((view.epoch, info));
+                        published = true;
                     }
                     Err(e) => {
                         // Typical right after a network switch, until the
@@ -125,7 +127,12 @@ pub async fn publish_node(
                 }
             }
         }
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        // Rate limit: at most one publish every 5 s. Only after a publish:
+        // a key rotation passes through a moment of "not a member", and the
+        // new epoch's node info must not wait 5 s behind it
+        if published || failed {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
         let retry = async {
             if failed {
                 tokio::time::sleep(Duration::from_secs(5)).await

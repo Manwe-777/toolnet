@@ -16,6 +16,8 @@ import { pathToFileURL } from "node:url";
 import {
   approveDevice,
   connect,
+  createNetwork,
+  listNetworks,
   loadNetwork,
   removeDevice,
   setRoutes,
@@ -128,6 +130,23 @@ try {
       console.log(`JS view: epoch ${view.epoch}, ${describe(view)}`);
       const want = Number(args[0] || 0);
       if (Object.keys(view.nodes).length < want) fail(`expected node info of ${want} members`);
+      break;
+    }
+    case "list": {
+      // The app's network list: Rust's network, plus one the app creates
+      await createNetwork(db, "lab", { ipv4: "10.214.0.0/24" });
+      const nets = await listNetworks(db);
+      console.log(`JS networks: ${nets.map((n) => `${n.name}(${n.ipv4}, ${n.members} devices, epoch ${n.epoch})`).join(", ")}`);
+      const names = nets.map((n) => n.name).join(",");
+      const want = ["lab", net].sort().join(",");
+      if (names !== want) fail(`expected networks ${want}, got ${names}`);
+      if (!nets.every((n) => n.status === "ok")) fail("a network the owner can't open");
+      try {
+        await createNetwork(db, "Bad.Name");
+        fail("accepted an invalid network name");
+      } catch (e) {
+        if (!/lowercase/.test(e.message)) throw e;
+      }
       break;
     }
     case "expect-epoch": {

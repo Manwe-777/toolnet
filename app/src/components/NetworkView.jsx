@@ -1,16 +1,13 @@
-import { useState } from "react";
-import { createNetwork, DEFAULT_IPV4 } from "../lib/net.js";
 import { isExitRoute } from "../lib/parse.js";
 import { ago, isRecent } from "../lib/time";
 import { SettingsIcon, RefreshIcon } from "./Icons";
 
-function NetworkView({ db, net, view, loading, flash, onRefresh, onAdd, onMember, onSettings }) {
+function NetworkView({ net, view, loading, flash, onRefresh, onAdd, onMember, onSettings, onNetworks }) {
   return (
     <main className="page">
       <header className="topbar">
-        <h1>
-          {net} <span className="muted small">toolnet</span>
-        </h1>
+        <button className="btn btn--ghost btn--small" onClick={onNetworks} aria-label="All networks">← Networks</button>
+        <h1>{net}</h1>
         <div className="row">
           <button className="icon-btn" onClick={onRefresh} aria-label="Refresh" disabled={loading}>
             <span className={loading ? "spin" : ""}><RefreshIcon /></span>
@@ -26,7 +23,11 @@ function NetworkView({ db, net, view, loading, flash, onRefresh, onAdd, onMember
       {!view ? (
         <div className="center"><div className="spinner" /></div>
       ) : view.status === "none" ? (
-        <CreateNetwork db={db} net={net} onCreated={onRefresh} onSettings={onSettings} />
+        <section className="card">
+          <h2>No network "{net}"</h2>
+          <p className="muted">This owner key has no network called "{net}" on these relays (anymore).</p>
+          <button className="btn btn--small" onClick={onNetworks}>Your networks</button>
+        </section>
       ) : view.status === "locked" ? (
         <section className="card">
           <h2>Can't open "{net}"</h2>
@@ -85,46 +86,5 @@ function Members({ view, onAdd, onMember }) {
 }
 
 const ipOrder = (ip) => ip.split(".").reduce((n, p) => n * 256 + Number(p), 0);
-
-function CreateNetwork({ db, net, onCreated, onSettings }) {
-  const [ipv4, setIpv4] = useState(DEFAULT_IPV4);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-
-  const create = async (e) => {
-    e.preventDefault();
-    setBusy(true);
-    setError("");
-    try {
-      await createNetwork(db, net, { ipv4: ipv4.trim() });
-      onCreated();
-    } catch (err) {
-      setError(err.message);
-    }
-    setBusy(false);
-  };
-
-  return (
-    <section className="card">
-      <h2>No network "{net}" yet</h2>
-      <p className="muted">
-        This owner key has no network called "{net}" on these relays. If you made it with{" "}
-        <code>toolnet owner create</code>, check the network name and relays in settings. Or create
-        it here:
-      </p>
-      <form className="stack" onSubmit={create}>
-        <label className="field">
-          <span className="label">Tailnet range</span>
-          <input value={ipv4} onChange={(e) => setIpv4(e.target.value)} required />
-        </label>
-        {error && <p className="error">{error}</p>}
-        <button className="btn btn--primary" type="submit" disabled={busy}>
-          {busy ? "Creating…" : `Create ${net}`}
-        </button>
-        <button className="btn btn--ghost" type="button" onClick={onSettings}>Settings</button>
-      </form>
-    </section>
-  );
-}
 
 export default NetworkView;

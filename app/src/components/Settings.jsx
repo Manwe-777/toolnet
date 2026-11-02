@@ -5,17 +5,9 @@ import { exportSecretKey, getRelays, saveRelays } from "../lib/session";
 import CopyField from "./CopyField";
 import { keyInputProps } from "./Setup";
 
-function Settings({ secretKey, net, onNet, onSignOut, onBack }) {
+function Settings({ secretKey, onSignOut, onBack }) {
   const [showKey, setShowKey] = useState(false);
-  const [name, setName] = useState(net);
   const [relays, setRelays] = useState(getRelays().join("\n"));
-
-  const applyNet = (e) => {
-    e.preventDefault();
-    const value = name.trim();
-    // Rust puts the name in keys (net-N, gk-N-D): ToolDB keys can't have dots
-    if (value && !value.includes(".")) onNet(value);
-  };
 
   const applyRelays = (e) => {
     e.preventDefault();
@@ -32,15 +24,6 @@ function Settings({ secretKey, net, onNet, onSignOut, onBack }) {
         <h1>Settings</h1>
         <span />
       </header>
-
-      <section className="card">
-        <h2>Network</h2>
-        <form className="row" onSubmit={applyNet}>
-          <input value={name} onChange={(e) => setName(e.target.value)} aria-label="Network name" required {...keyInputProps} />
-          <button className="btn btn--small" type="submit">Open</button>
-        </form>
-        <p className="hint">The <code>--net</code> name the network was created with (default home).</p>
-      </section>
 
       <section className="card">
         <h2>Owner key</h2>

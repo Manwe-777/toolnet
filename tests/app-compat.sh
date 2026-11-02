@@ -30,6 +30,9 @@ wait_for "$W/relay.log" listening 10
 
 log "Rust: owner creates the network"
 "$BIN" --state "$W/owner" owner create --net home --relay "$RELAY" > /dev/null
+
+log "JS: lists the owner's networks (and creates a second one)"
+js list
 OWNER=$(python3 -c "import json;print(json.load(open('$W/owner/config.json'))['owner'])")
 for d in alpha beta; do
   "$BIN" --state "$W/$d" init --owner "$OWNER" --net home --relay "$RELAY" > /dev/null

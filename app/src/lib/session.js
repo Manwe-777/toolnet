@@ -51,8 +51,8 @@ export function saveRelays(relays) {
   localStorage.setItem(RELAYS_KEY, JSON.stringify(relays));
 }
 
-/** The network we manage, "home" like the CLI's default */
-export const getNet = () => read(NET_KEY) || "home";
+/** The network we last opened, if any: picked from the list, never guessed */
+export const getNet = () => read(NET_KEY) || null;
 
 export function saveNet(net) {
   localStorage.setItem(NET_KEY, net);
