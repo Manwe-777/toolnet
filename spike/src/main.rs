@@ -15,7 +15,7 @@ use std::{
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use iroh::{
-    Endpoint, EndpointAddr, EndpointId, RelayMode, SecretKey, TransportAddr,
+    Endpoint, EndpointAddr, EndpointId, RelayMode, RelayUrl, SecretKey, TransportAddr,
     endpoint::{Connection, presets},
 };
 use tokio::sync::RwLock;
@@ -57,6 +57,10 @@ enum Cmd {
         /// UDP address to bind (default: random port)
         #[arg(long)]
         bind: Option<SocketAddr>,
+        /// Relay to use instead of n0's public ones (repeatable). Peers are assumed
+        /// to share it, so it is also used to dial them without an address lookup
+        #[arg(long = "relay")]
+        relays: Vec<RelayUrl>,
         /// No relays and no address lookup: direct addresses only (offline tests)
         #[arg(long)]
         offline: bool,
@@ -121,8 +125,8 @@ async fn main() -> Result<()> {
             println!("{}", key.public());
             Ok(())
         }
-        Cmd::Up { key, ip, prefix, peers, peer_addrs, bind, offline, dev } => {
-            up(load_or_create_key(&key)?, ip, prefix, peers, peer_addrs, bind, offline, dev).await
+        Cmd::Up { key, ip, prefix, peers, peer_addrs, relays, bind, offline, dev } => {
+            up(load_or_create_key(&key)?, ip, prefix, peers, peer_addrs, relays, bind, offline, dev).await
         }
     }
 }
@@ -134,6 +138,7 @@ async fn up(
     prefix: u8,
     peers: Vec<(EndpointId, Ipv4Addr)>,
     peer_addrs: Vec<(EndpointId, SocketAddr)>,
+    relays: Vec<RelayUrl>,
     bind: Option<SocketAddr>,
     offline: bool,
     dev: String,
@@ -144,6 +149,9 @@ async fn up(
     } else {
         Endpoint::builder(presets::N0)
     };
+    if !offline && !relays.is_empty() {
+        builder = builder.relay_mode(RelayMode::custom(relays.clone()));
+    }
     builder = builder.secret_key(key).alpns(vec![ALPN.to_vec()]);
     if let Some(bind) = bind {
         builder = builder.clear_ip_transports().bind_addr(bind)?;
@@ -207,10 +215,18 @@ async fn up(
         }
         let direct: Vec<SocketAddr> =
             peer_addrs.iter().filter(|(id, _)| *id == peer).map(|(_, a)| *a).collect();
-        let (endpoint, conns, tun) = (endpoint.clone(), conns.clone(), tun.clone());
+        let (endpoint, conns, tun, relays) =
+            (endpoint.clone(), conns.clone(), tun.clone(), relays.clone());
         tokio::spawn(async move {
             loop {
-                let addr = EndpointAddr::from_parts(peer, direct.iter().copied().map(TransportAddr::Ip));
+                let addr = EndpointAddr::from_parts(
+                    peer,
+                    direct
+                        .iter()
+                        .copied()
+                        .map(TransportAddr::Ip)
+                        .chain(relays.iter().cloned().map(TransportAddr::Relay)),
+                );
                 match endpoint.connect(addr, ALPN).await {
                     Ok(conn) => run_conn(peer, conn, conns.clone(), tun.clone()).await,
                     Err(e) => warn!(%peer, "connect failed: {e:#}"),
