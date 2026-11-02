@@ -17,14 +17,21 @@
 - **MagicDNS**: `<member>.<domain>` served on the tailnet IP, split DNS via
   systemd-resolved.
 - **systemd unit** with only `CAP_NET_ADMIN` and `CAP_NET_BIND_SERVICE`.
+- **First real run with TUN** (laptop + homelab, home Wi-Fi, public Nostr
+  relays): tailnet ping both ways (direct, 2-3 ms), MagicDNS, 44 Mbit/s TCP
+  over Wi-Fi (58 plain), the home LAN route accepted while at home without
+  breaking the LAN, and the homelab as exit node (20 MB download through it).
+  Bugs it found, all fixed and covered by tests: subnet routes replaced the
+  local LAN route; helpers (`ip`, `nft`) didn't inherit file capabilities and
+  `nft` isn't on a Debian user's PATH; `resolvectl` blocked the main loop on a
+  polkit prompt; Docker's iptables FORWARD DROP broke the exit node.
 
 ## Next
 
 1. **Hole punching on LTE.** Both NATs measure as consistent, yet iroh never
    got a direct path from the LTE hotspot to home. Run `tools/punchtest.py`
    (see spike/README.md) to tell NAT filtering from an iroh issue.
-2. **Real-world run with TUN**: laptop + homelab as services, exit node
-   through the homelab from LTE.
+2. **Exit node from LTE** with TUN (home run done), and as systemd services.
 3. **Owner app**: a PWA (like homelab-monitor's) holding the owner key, with
    approve / remove / routes. JS tool-db compatibility is already tested.
    Pairing by QR code: the device shows its npub, the owner scans it.
@@ -49,6 +56,11 @@
   dropped. Harmless, but iroh has no option to filter them yet.
 - Some networks' DNS blocks `dns.iroh.link`. toolnet doesn't use iroh's
   address lookup, so this only matters for the spike.
-- Docker's iptables `FORWARD` policy can drop routed traffic on a Docker host;
-  toolnet's nft accept rule doesn't override another table's drop. Needs a
-  `DOCKER-USER` rule on such hosts.
+- Run by hand with `setcap`, systemd-resolved refuses the MagicDNS
+  registration (it wants polkit authorization, not just `CAP_NET_ADMIN`):
+  names resolve with `dig @<tailnet ip>`; the systemd service (root) is fine.
+- MagicDNS can't bind port 53 on a host that already runs a DNS server on
+  `0.0.0.0:53` (the homelab). That host's own lookups of tailnet names fail;
+  other devices are unaffected.
+- `setcap` is lost on every rebuild: run from a copy (`~/.local/bin/toolnet`)
+  and re-grant only when replacing it.
