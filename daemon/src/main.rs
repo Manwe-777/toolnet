@@ -233,6 +233,7 @@ async fn main() -> Result<()> {
         Cmd::Id => {
             let keys = state.device_keys()?;
             println!("device:   {}", keys.public_key().to_bech32()?);
+            println!("hex:      {}", keys.public_key().to_hex());
             println!("endpoint: {}", state.endpoint_key()?.public());
             Ok(())
         }
