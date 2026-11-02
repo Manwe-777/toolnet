@@ -40,16 +40,16 @@
 
 ## Next
 
-1. **Reliable hole punching from LTE.** The low-TTL trick got one direct
-   path (100-200 ms instead of ~410), but the next session stayed relayed for
-   7 min. In place now, untested on LTE: punch roles (low / full TTL) swap
-   every 15 s, and "poke" connections make iroh start a punching round right
-   after the NATs should be open (iroh itself retries only every 60 s while
-   relayed). Next LTE session: run with `RUST_LOG=...,iroh::_events=debug` to
-   see iroh's NAT traversal rounds and candidate addresses. If iroh still
-   can't, punch on toolnet's side and hand iroh the working address.
-2. **systemd service on both machines**, so MagicDNS registers with resolved
-   and nothing needs `setcap` by hand.
+1. **Confirm coordinated hole punching on LTE.** Root cause found and fixed
+   in namespaces (`tests/netns-nat.sh`, direct in ~5 s every run; relayed
+   forever with `TOOLNET_PUNCH_HOLD=0`): if a full-size packet reaches the far
+   NAT before that side has sent toward us, the NAT records the flow as aimed
+   at itself and the far device's own packets get a different public port.
+   iroh's first probes did exactly that. Now a firewall rule holds iroh's
+   full-size packets to a relayed peer's public address, both sides open their
+   NATs with TTL-5 packets, agree over the relay connection (`\0PUN`), then
+   release iroh and start a round. On a real LTE session: check it goes direct.
+   Android will need another way to hold iroh's probes (no nft).
 3. **Owner app** (in progress, `app/`): a PWA holding the owner key, with
    approve by QR scan / remove / routes. Devices show their QR with
    `toolnet id --qr`. Needs HTTPS (camera) when served to the phone.

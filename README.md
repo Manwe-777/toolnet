@@ -88,6 +88,7 @@ tests/compat.sh              # JS tool-db reads Rust's data; Rust accepts a JS a
 tests/netns-tun.sh           # TUN traffic in namespaces, MagicDNS, subnet route on/off
 tests/netns-exit.sh          # exit node: internet only through the exit, peer traffic bypasses
 tests/app-compat.sh          # owner app logic (JS) drives Rust devices: approve by QR payload, routes, remove
+tests/netns-nat.sh           # two devices behind NAT routers + local relays: hole punching goes direct (needs iroh-relay)
 tests/netns-roam.sh          # network switch: reconnect to Nostr at once, republish, keep following
 ```
 

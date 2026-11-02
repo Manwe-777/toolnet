@@ -20,10 +20,7 @@ use std::os::fd::RawFd;
 /// short of the peer's
 pub const PUNCH_TTL: i32 = 5;
 
-/// Seconds before the low / full TTL roles swap between the two sides.
-/// Measured LTE hotspot -> home: home must send at full TTL, LTE at low TTL;
-/// the other way around never connects
-pub const PUNCH_PHASE_SECS: u64 = 15;
+
 
 /// iroh's IPv4 UDP sockets in this process, found by their local port
 pub fn iroh_sockets(ports: &[u16]) -> Vec<RawFd> {
@@ -110,6 +107,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pun_roundtrip_and_ready() {
+        let t: Vec<SocketAddrV4> = vec!["45.1.2.3:9".parse().unwrap(), "45.1.2.4:10".parse().unwrap()];
+        let m = encode_pun(Duration::from_millis(2500), &t);
+        assert_eq!(decode_pun(&m), Some((Duration::from_millis(2500), t.clone())));
+        assert_eq!(decode_pun(b"\0PUN\0\0"), None);
+        let now = Instant::now();
+        let mut p = PeerPunch { since: Some(now - Duration::from_secs(3)), ..Default::default() };
+        p.peer_open = Duration::from_secs(3);
+        p.peer_heard = Some(now);
+        p.peer_targets = vec![t[0]];
+        assert!(p.ready(&[t[0]], now));
+        assert!(!p.ready(&[t[1]], now), "the peer must aim at our current address");
+        p.peer_open = Duration::from_secs(1);
+        assert!(!p.ready(&[t[0]], now), "the peer must have opened its NAT long enough");
+    }
+
+    #[test]
     fn low_ttl_packet_from_an_existing_socket() {
         let a = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         let b = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -123,5 +137,156 @@ mod tests {
         let (n, from) = b.recv_from(&mut buf).unwrap();
         assert_eq!((n, from.port()), (1, port), "sent from that socket");
         assert_eq!(punch_targets(&["192.168.1.2:1".parse().unwrap(), "45.1.2.3:9".parse().unwrap()]).len(), 1);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Coordinated punching. Measured (LTE <-> home, and reproduced with plain
+// Linux NAT in tests/netns-nat.sh): if a full-size packet reaches the other
+// side's NAT before that side has sent anything toward us, the NAT treats the
+// flow as aimed at itself, and the other device's own packets then get a
+// different public port, so everything aimed at the port it advertised
+// misses. iroh's probes are full size and go out as soon as a round starts.
+// So: hold iroh's full-size packets to a relayed peer's public address (a
+// firewall rule on this device, which our 1-byte punch packets pass), open our
+// NATs with low-TTL packets, tell the peer over the relay connection, and
+// release when both sides have been at it for a moment.
+// ---------------------------------------------------------------------------
+
+use std::time::{Duration, Instant};
+
+/// Both sides must have opened their NATs this long before iroh may probe
+pub const OPEN_BEFORE_RELEASE: Duration = Duration::from_secs(2);
+/// No direct path this long after a release: start over
+pub const RELEASE_RETRY: Duration = Duration::from_secs(20);
+
+/// What we know about punching toward one peer
+#[derive(Default, Debug)]
+pub struct PeerPunch {
+    /// The peer's public addresses we punch toward, and since when
+    pub targets: Vec<SocketAddrV4>,
+    pub since: Option<Instant>,
+    /// From the peer's last PUN message: how long it has punched, toward which
+    /// addresses (its view of ours), and when we heard it
+    pub peer_open: Duration,
+    pub peer_targets: Vec<SocketAddrV4>,
+    pub peer_heard: Option<Instant>,
+    pub released: Option<Instant>,
+    pub last_pun: Option<Instant>,
+}
+
+impl PeerPunch {
+    /// Starts over when the peer's public addresses change: hold them, and
+    /// open our NATs toward them from now on
+    pub fn track(&mut self, hold: &mut Option<Hold>, targets: &[SocketAddrV4], now: Instant) -> bool {
+        if self.targets == targets {
+            return false;
+        }
+        self.restart(hold, targets, now);
+        true
+    }
+
+    pub fn restart(&mut self, hold: &mut Option<Hold>, targets: &[SocketAddrV4], now: Instant) {
+        if let Some(h) = hold.as_mut() {
+            for t in &self.targets {
+                h.release(*t);
+            }
+            for t in targets {
+                h.hold(*t);
+            }
+        }
+        self.targets = targets.to_vec();
+        self.since = Some(now);
+        self.released = None;
+    }
+
+    /// Stops punching (direct path, or nothing to punch toward)
+    pub fn stop(&mut self, hold: &mut Option<Hold>) {
+        if let Some(h) = hold.as_mut() {
+            for t in &self.targets {
+                h.release(*t);
+            }
+        }
+        *self = Default::default();
+    }
+
+    /// Whether iroh may now probe this peer's public addresses
+    pub fn ready(&self, ours: &[SocketAddrV4], now: Instant) -> bool {
+        let opened = self.since.is_some_and(|s| now - s >= OPEN_BEFORE_RELEASE);
+        let heard = self.peer_heard.is_some_and(|h| now - h < Duration::from_secs(3));
+        let aimed_at_us = self.peer_targets.iter().any(|t| ours.contains(t));
+        opened && heard && self.peer_open >= OPEN_BEFORE_RELEASE && aimed_at_us
+    }
+}
+
+/// `\0PUN`, u32 ms we've been opening our NAT, u8 count, then the addresses
+/// we punch toward (ip, port)
+pub fn encode_pun(open: Duration, targets: &[SocketAddrV4]) -> Vec<u8> {
+    let mut m = b"\0PUN".to_vec();
+    m.extend_from_slice(&(open.as_millis().min(u32::MAX as u128) as u32).to_be_bytes());
+    let targets = &targets[..targets.len().min(8)];
+    m.push(targets.len() as u8);
+    for t in targets {
+        m.extend_from_slice(&t.ip().octets());
+        m.extend_from_slice(&t.port().to_be_bytes());
+    }
+    m
+}
+
+pub fn decode_pun(m: &[u8]) -> Option<(Duration, Vec<SocketAddrV4>)> {
+    let rest = m.strip_prefix(b"\0PUN")?;
+    let open = Duration::from_millis(u32::from_be_bytes(rest.get(0..4)?.try_into().ok()?) as u64);
+    let n = *rest.get(4)? as usize;
+    let addrs = rest.get(5..5 + n * 6)?;
+    let targets = addrs
+        .chunks(6)
+        .map(|c| SocketAddrV4::new(Ipv4Addr::new(c[0], c[1], c[2], c[3]), u16::from_be_bytes([c[4], c[5]])))
+        .collect();
+    Some((open, targets))
+}
+
+/// The firewall hold: drops iroh's full-size UDP packets to held addresses
+/// while the flow has had no reply (conntrack state new). Our 1-byte punch
+/// packets pass, and so does everything once the peer's packets arrive.
+pub struct Hold {
+    held: std::collections::BTreeSet<SocketAddrV4>,
+}
+
+const HOLD_TABLE: &str = "toolnet_punch";
+
+impl Hold {
+    pub fn new(iroh_ports: &[u16]) -> anyhow::Result<Self> {
+        let ports = iroh_ports.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ");
+        let _ = crate::os::nft(&format!("delete table inet {HOLD_TABLE}"));
+        crate::os::nft(&format!(
+            "table inet {HOLD_TABLE} {{
+                set ports {{ type inet_service; elements = {{ {ports} }} }}
+                set hold {{ type ipv4_addr . inet_service; }}
+                chain out {{
+                    type filter hook output priority 0; policy accept;
+                    udp sport @ports ip daddr . udp dport @hold ct state new udp length > 32 drop
+                }}
+            }}"
+        ))?;
+        tracing::info!(ports = %ports, "hole punching: holding iroh's first probes until both NATs are open");
+        Ok(Self { held: Default::default() })
+    }
+
+    pub fn hold(&mut self, a: SocketAddrV4) {
+        if self.held.insert(a) {
+            let _ = crate::os::nft(&format!("add element inet {HOLD_TABLE} hold {{ {} . {} }}", a.ip(), a.port()));
+        }
+    }
+
+    pub fn release(&mut self, a: SocketAddrV4) {
+        if self.held.remove(&a) {
+            let _ = crate::os::nft(&format!("delete element inet {HOLD_TABLE} hold {{ {} . {} }}", a.ip(), a.port()));
+        }
+    }
+}
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        let _ = crate::os::nft(&format!("delete table inet {HOLD_TABLE}"));
     }
 }

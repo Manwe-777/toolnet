@@ -93,6 +93,10 @@ enum Cmd {
         /// iroh relay URL to use instead of n0's public relays (repeatable)
         #[arg(long = "iroh-relay")]
         iroh_relays: Vec<iroh::RelayUrl>,
+        /// Extra CA certificate(s) (PEM) to trust for the iroh relays: for a
+        /// self-hosted relay with its own certificate
+        #[arg(long)]
+        relay_ca: Option<std::path::PathBuf>,
         /// Offer to route these prefixes for the tailnet (comma separated),
         /// e.g. a LAN behind this machine. The owner must approve them
         #[arg(long, value_delimiter = ',')]
@@ -288,11 +292,11 @@ async fn main() -> Result<()> {
         }
         Cmd::Owner { cmd } => owner(&state, cmd).await,
         Cmd::Status => status(&state).await,
-        Cmd::Up { no_tun, dev, offline, bind, iroh_relays, mut advertise_routes, advertise_exit_node, exit_node, no_dns } => {
+        Cmd::Up { no_tun, dev, offline, bind, iroh_relays, relay_ca, mut advertise_routes, advertise_exit_node, exit_node, no_dns } => {
             if advertise_exit_node {
                 advertise_routes.push("0.0.0.0/0".parse()?);
             }
-            up(&state, UpOpts { no_tun, dev, offline, bind, iroh_relays, advertise_routes, exit_node, no_dns }).await
+            up(&state, UpOpts { no_tun, dev, offline, bind, iroh_relays, relay_ca, advertise_routes, exit_node, no_dns }).await
         }
     }
 }
@@ -529,6 +533,7 @@ struct UpOpts {
     offline: bool,
     bind: Option<SocketAddr>,
     iroh_relays: Vec<iroh::RelayUrl>,
+    relay_ca: Option<std::path::PathBuf>,
     advertise_routes: Vec<engine::Cidr>,
     exit_node: Option<String>,
     no_dns: bool,
@@ -557,7 +562,7 @@ async fn resolve_hosts(urls: impl IntoIterator<Item = String>) -> std::collectio
 
 async fn up(state: &State, opts: UpOpts) -> Result<()> {
     os::inherit_capabilities();
-    let UpOpts { no_tun, dev, offline, bind, iroh_relays, advertise_routes, exit_node, no_dns } = opts;
+    let UpOpts { no_tun, dev, offline, bind, iroh_relays, relay_ca, advertise_routes, exit_node, no_dns } = opts;
     let (keys, cfg) = (state.device_keys()?, state.config()?);
     let id = Identity { device: keys.clone(), owner: parse_pubkey(&cfg.owner)?, net: cfg.net.clone() };
     let engine = Engine::start(EngineConfig {
@@ -565,6 +570,7 @@ async fn up(state: &State, opts: UpOpts) -> Result<()> {
         offline,
         relays: iroh_relays,
         bind,
+        relay_ca,
     })
     .await?;
     info!(device = %keys.public_key().to_bech32()?, endpoint = %engine.id(), "toolnet up");

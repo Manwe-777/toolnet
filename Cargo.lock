@@ -3983,6 +3983,7 @@ dependencies = [
  "nostr",
  "nostr-sdk",
  "qrcode",
+ "rustls-pki-types",
  "serde",
  "serde_json",
  "tokio",

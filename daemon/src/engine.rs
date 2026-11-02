@@ -2,6 +2,7 @@
 //! travel between peers as QUIC datagrams. The peer set is driven by the
 //! control plane and can change at any time.
 
+use std::net::SocketAddrV4;
 use std::{
     collections::HashMap,
     net::{Ipv4Addr, SocketAddr},
@@ -104,6 +105,9 @@ pub struct EngineConfig {
     pub offline: bool,
     pub relays: Vec<RelayUrl>,
     pub bind: Option<SocketAddr>,
+    /// Extra CA certificates (PEM) to trust for relays, besides the usual
+    /// web roots: for a self-hosted relay with its own certificate
+    pub relay_ca: Option<std::path::PathBuf>,
 }
 
 #[derive(Default)]
@@ -116,6 +120,8 @@ struct State {
     dialers: HashMap<EndpointId, (Peer, JoinHandle<()>)>,
     /// Prefix -> endpoint id, longest prefix first
     routes: Vec<(Cidr, EndpointId)>,
+    /// Hole punching progress per relayed peer (see punch.rs)
+    punch: HashMap<EndpointId, crate::punch::PeerPunch>,
 }
 
 impl State {
@@ -128,6 +134,8 @@ impl State {
 #[derive(Clone)]
 pub struct Engine {
     pub endpoint: Endpoint,
+    /// Holds iroh's first probes to relayed peers (None offline, or without nft)
+    hold: Arc<std::sync::Mutex<Option<crate::punch::Hold>>>,
     state: Arc<RwLock<State>>,
     tun: Arc<RwLock<Option<Arc<AsyncDevice>>>>,
 }
@@ -145,6 +153,15 @@ impl Engine {
             builder.relay_mode(RelayMode::Default)
         };
         builder = builder.secret_key(cfg.secret).alpns(vec![ALPN.to_vec(), ALPN_POKE.to_vec()]);
+        if let Some(path) = &cfg.relay_ca {
+            use rustls_pki_types::{CertificateDer, pem::PemObject};
+            let certs = CertificateDer::pem_file_iter(path)
+                .with_context(|| format!("reading {}", path.display()))?
+                .collect::<Result<Vec<_>, _>>()
+                .with_context(|| format!("parsing {}", path.display()))?;
+            info!(count = certs.len(), path = %path.display(), "trusting extra relay CA certificates");
+            builder = builder.ca_tls_config(iroh::tls::CaTlsConfig::embedded().with_extra_roots(certs));
+        }
         if let Some(bind) = cfg.bind {
             builder = builder.clear_ip_transports().bind_addr(bind)?;
         }
@@ -153,8 +170,26 @@ impl Engine {
             // Don't block forever without internet; the relay connects later
             let _ = tokio::time::timeout(Duration::from_secs(10), endpoint.online()).await;
         }
+        // The punch hold exists before any connection: iroh starts probing
+        // as soon as a (relayed) connection is up
+        let hold = if cfg.offline {
+            None
+        } else if std::env::var("TOOLNET_PUNCH_HOLD").is_ok_and(|v| v == "0") {
+            warn!("TOOLNET_PUNCH_HOLD=0: iroh probes without waiting (hole punching may fail)");
+            None
+        } else {
+            let ports: Vec<u16> = endpoint.bound_sockets().iter().map(|a| a.port()).collect();
+            match crate::punch::Hold::new(&ports) {
+                Ok(h) => Some(h),
+                Err(e) => {
+                    warn!("hole punching without the firewall hold (iroh may probe too early): {e:#}");
+                    None
+                }
+            }
+        };
         let engine = Self {
             endpoint,
+            hold: Arc::new(std::sync::Mutex::new(hold)),
             state: Default::default(),
             tun: Default::default(),
         };
@@ -229,6 +264,20 @@ impl Engine {
             }
             if let Some(conn) = state.conns.remove(&id) {
                 conn.close(2u32.into(), b"removed");
+            }
+        }
+
+        // Hold iroh's probes to new public addresses before anything dials
+        {
+            let now = Instant::now();
+            let mut hold = self.hold.lock().unwrap();
+            let state = &mut *state;
+            for (id, peer) in &wanted {
+                let direct = state.conns.get(id).is_some_and(|c| c.paths().iter().any(|p| p.is_selected() && !p.is_relay()));
+                if !direct {
+                    let targets = crate::punch::punch_targets(&peer.addrs);
+                    state.punch.entry(*id).or_default().track(&mut hold, &targets, now);
+                }
             }
         }
 
@@ -336,6 +385,12 @@ impl Engine {
                     let mut pong = packet.to_vec();
                     pong[..4].copy_from_slice(b"\0PON");
                     let _ = conn.send_datagram(pong.into());
+                } else if let Some((open, targets)) = crate::punch::decode_pun(&packet) {
+                    let mut state = self.state.write().await;
+                    let p = state.punch.entry(id).or_default();
+                    p.peer_open = open;
+                    p.peer_targets = targets;
+                    p.peer_heard = Some(Instant::now());
                 } else if packet.starts_with(b"\0PON") && packet.len() == 12 {
                     pongs += 1;
                     let sent = u64::from_be_bytes(packet[4..12].try_into().unwrap());
@@ -412,80 +467,94 @@ impl Engine {
     }
 
     /// Status lines for each desired peer
-    /// While a peer is only reachable through a relay, keep opening the NATs
-    /// toward its public addresses (see punch.rs). One side sends with a low
-    /// TTL (opens only its own NATs), the other at full TTL (opens its NATs and
-    /// reaches ours); which one must be which depends on the networks, so the
-    /// roles swap every PUNCH_PHASE by the wall clock, which both sides share.
+    /// Hole punching for relayed peers (see punch.rs): hold iroh's first
+    /// probes, open our NATs with low-TTL packets, tell the peer, and release
+    /// iroh (with a fresh punching round) once both sides are ready
     pub fn spawn_punch_assist(&self) {
+        use crate::punch::{self, PUNCH_TTL, RELEASE_RETRY};
         let engine = self.clone();
         tokio::spawn(async move {
-            let me = engine.id();
-            let mut tick = tokio::time::interval(std::time::Duration::from_millis(500));
-            let mut last_phase = None;
-            let mut poked = false;
+            let mut tick = tokio::time::interval(Duration::from_millis(500));
             loop {
                 tick.tick().await;
-                let phase = (crate::now() / crate::punch::PUNCH_PHASE_SECS) % 2 == 1;
-                let targets: Vec<(String, std::net::SocketAddrV4, i32)> = {
-                    let state = engine.state.read().await;
-                    state
-                        .peers
-                        .values()
-                        .filter(|p| {
-                            !state.conns.get(&p.endpoint).is_some_and(|c| {
-                                c.paths().iter().any(|path| path.is_selected() && !path.is_relay())
-                            })
-                        })
-                        .flat_map(|p| {
-                            // the dialer (lower id) starts low, the other side full
-                            let low = (me < p.endpoint) != phase;
-                            let ttl = if low { crate::punch::PUNCH_TTL } else { 64 };
-                            crate::punch::punch_targets(&p.addrs).into_iter().map(move |a| (p.name.clone(), a, ttl))
-                        })
-                        .collect()
-                };
-                if targets.is_empty() {
-                    continue;
-                }
-                for fd in crate::punch::iroh_sockets(&engine.udp_ports()) {
-                    for (name, dst, ttl) in &targets {
-                        if let Err(e) = crate::punch::send_with_ttl(fd, *dst, *ttl) {
-                            debug!(peer = %name, %dst, "punch: {e}");
+                let now = Instant::now();
+                let ours = punch::punch_targets(&engine.endpoint.addr().ip_addrs().copied().collect::<Vec<_>>());
+                let mut sends: Vec<SocketAddrV4> = vec![];
+                let mut puns: Vec<(Connection, Vec<u8>)> = vec![];
+                let mut pokes: Vec<Peer> = vec![];
+                {
+                    let mut guard = engine.state.write().await;
+                    let state = &mut *guard;
+                    let mut hold = engine.hold.lock().unwrap();
+                    state.punch.retain(|id, _| state.peers.contains_key(id));
+                    for (id, peer) in &state.peers {
+                        let conn = state.conns.get(id);
+                        let direct = conn.is_some_and(|c| c.paths().iter().any(|p| p.is_selected() && !p.is_relay()));
+                        let targets = punch::punch_targets(&peer.addrs);
+                        let p = state.punch.entry(*id).or_default();
+                        if direct || targets.is_empty() {
+                            if !p.targets.is_empty() {
+                                debug!(peer = %peer.name, direct, "hole punching: done");
+                            }
+                            p.stop(&mut hold);
+                            continue;
+                        }
+                        // New addresses, or a release that didn't work: hold
+                        // again and open our NATs from scratch
+                        let retry = p.released.is_some_and(|r| now - r > RELEASE_RETRY);
+                        if retry {
+                            p.restart(&mut hold, &targets, now);
+                        }
+                        if p.track(&mut hold, &targets, now) || retry {
+                            debug!(peer = %peer.name, ?targets, retry, "hole punching: opening our NATs");
+                        }
+                        sends.extend(&p.targets);
+                        if let Some(conn) = conn {
+                            if p.last_pun.is_none_or(|l| now - l >= Duration::from_secs(1)) {
+                                let open = now - p.since.unwrap_or(now);
+                                puns.push((conn.clone(), punch::encode_pun(open, &p.targets)));
+                                p.last_pun = Some(now);
+                            }
+                        }
+                        if p.released.is_none() && p.ready(&ours, now) {
+                            if let Some(h) = hold.as_mut() {
+                                for t in &p.targets {
+                                    h.release(*t);
+                                }
+                            }
+                            p.released = Some(now);
+                            info!(peer = %peer.name, targets = ?p.targets, "hole punching: both NATs open, letting iroh probe");
+                            pokes.push(peer.clone());
                         }
                     }
                 }
-                if last_phase != Some(phase) {
-                    debug!(?targets, "punching (peer, address, ttl)");
-                    last_phase = Some(phase);
-                    poked = false;
-                }
-                // A few seconds into each phase, once the punch packets have
-                // had time to open the NATs, make iroh punch now instead of
-                // on its own (up to a minute) schedule: a new connection
-                // starts a round, and with one from each side both punch
-                if !poked && crate::now() % crate::punch::PUNCH_PHASE_SECS >= 3 {
-                    poked = true;
-                    let relayed: Vec<Peer> = {
-                        let state = engine.state.read().await;
-                        let names: std::collections::BTreeSet<&String> = targets.iter().map(|(n, _, _)| n).collect();
-                        state.peers.values().filter(|p| names.contains(&p.name)).cloned().collect()
-                    };
-                    for peer in relayed {
-                        let endpoint = engine.endpoint.clone();
-                        tokio::spawn(async move {
-                            let poke = tokio::time::timeout(Duration::from_secs(5), endpoint.connect(peer.endpoint_addr(), ALPN_POKE));
-                            match poke.await {
-                                Ok(Ok(conn)) => {
-                                    debug!(peer = %peer.name, "poked iroh to hole punch");
-                                    tokio::time::sleep(Duration::from_secs(4)).await;
-                                    conn.close(0u32.into(), b"");
-                                }
-                                Ok(Err(e)) => debug!(peer = %peer.name, "poke failed: {e:#}"),
-                                Err(_) => debug!(peer = %peer.name, "poke timed out"),
+                if !sends.is_empty() {
+                    for fd in punch::iroh_sockets(&engine.udp_ports()) {
+                        for dst in &sends {
+                            if let Err(e) = punch::send_with_ttl(fd, *dst, PUNCH_TTL) {
+                                debug!(%dst, "punch: {e}");
                             }
-                        });
+                        }
                     }
+                }
+                for (conn, msg) in puns {
+                    let _ = conn.send_datagram(msg.into());
+                }
+                // A new connection makes iroh start a punching round now,
+                // instead of on its own (up to a minute) schedule
+                for peer in pokes {
+                    let endpoint = engine.endpoint.clone();
+                    tokio::spawn(async move {
+                        let poke = tokio::time::timeout(Duration::from_secs(5), endpoint.connect(peer.endpoint_addr(), ALPN_POKE));
+                        match poke.await {
+                            Ok(Ok(conn)) => {
+                                tokio::time::sleep(Duration::from_secs(4)).await;
+                                conn.close(0u32.into(), b"");
+                            }
+                            Ok(Err(e)) => debug!(peer = %peer.name, "poke failed: {e:#}"),
+                            Err(_) => debug!(peer = %peer.name, "poke timed out"),
+                        }
+                    });
                 }
             }
         });

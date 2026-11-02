@@ -35,6 +35,23 @@ pub fn command(cmd: &str) -> Command {
     Command::new(found.as_deref().unwrap_or(std::path::Path::new(cmd)))
 }
 
+/// Runs an nft script (from stdin)
+pub fn nft(script: &str) -> Result<()> {
+    let mut child = command("nft")
+        .args(["-f", "-"])
+        .stdin(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("running nft")?;
+    use std::io::Write;
+    child.stdin.take().unwrap().write_all(script.as_bytes())?;
+    let out = child.wait_with_output()?;
+    if !out.status.success() {
+        bail!("nft: {}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    Ok(())
+}
+
 fn run(cmd: &str, args: &[&str]) -> Result<()> {
     let out = command(cmd).args(args).output().with_context(|| format!("running {cmd}"))?;
     if !out.status.success() {
