@@ -66,6 +66,39 @@ The suspect is the test itself: the laptop's endpoint started on home Wi-Fi
 and migrated to LTE. Next test: start both sides fresh with the laptop
 already on LTE, using `--no-tun` (no privileges needed) and iroh debug logs.
 
+## Hole-punch test, fresh start on LTE (2026-11-02, 15:20 UTC)
+
+Both sides started fresh, the laptop already on LTE, `--no-tun`, iroh
+debug logs on.
+
+- **The hotspot's DNS blocks `dns.iroh.link`** (it resolves to `127.9.9.9`),
+  so iroh's address lookup can't work there at all. That also explains the
+  failed redials in the first LTE test. Worked around by passing the
+  server's address and relay with `--peer-addr` and `--relay`.
+- Connected through n0's relay, **328 pongs in 6 min, all `RELAY`**, ~400 ms
+  (spikes to 1.8 s). iroh triggered hole punching (laptop 3x, server 6x)
+  and never got a direct path.
+- Both sides knew their correct public address the whole time: laptop
+  `198.51.100.20:6474` (stable, consistent mapping), server
+  `203.0.113.10:58177` (all 4 n0 relays agree; iroh reports
+  `mapping_varies_by_dest: false`).
+- Ruled out: the server's ~33 addresses (Docker bridges) exceed iroh's 32
+  advertised-address limit, but addresses go in numerically, so the public
+  one is kept. Filtering out bridge addresses is still worth doing.
+
+**Open question:** is the blocker NAT *filtering* (address+port dependent
+at the carrier or the home router), or iroh's punching? `tools/punchtest.py`
+answers it without iroh: the server echoes UDP probes, first with no
+outbound traffic toward the LTE IP (full cone?), then with outbound traffic
+to the LTE IP (address-restricted?). Run it with the laptop on the hotspot:
+
+```bash
+# server, while the laptop is still at home (10 min, phases switch at 4 and 8 min)
+python3 ~/toolnet/tools/punchtest.py server 40000 198.51.100.20
+# laptop, on the hotspot, within the first 4 minutes
+python3 tools/punchtest.py laptop 203.0.113.10:40000
+```
+
 ## Run it across real NATs
 
 On each machine:
