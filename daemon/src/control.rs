@@ -88,6 +88,7 @@ pub async fn publish_node(
 ) -> Result<()> {
     let mut last: Option<(u64, NodeInfo)> = None;
     loop {
+        let mut failed = false;
         let (status, view) = views.borrow_and_update().clone();
         let info = infos.borrow_and_update().clone();
         if let (Status::Member, Some(view)) = (status, view) {
@@ -101,14 +102,27 @@ pub async fn publish_node(
                         info!(addrs = ?info.addrs, relay = ?info.relay, epoch = view.epoch, "published node info");
                         last = Some((view.epoch, info));
                     }
-                    Err(e) => warn!("publishing node info failed: {e:#}"),
+                    Err(e) => {
+                        // Typical right after a network switch, until the
+                        // relay connections are re-established: keep retrying
+                        warn!("publishing node info failed (retrying in 10 s): {e:#}");
+                        failed = true;
+                    }
                 }
             }
         }
         tokio::time::sleep(Duration::from_secs(5)).await;
+        let retry = async {
+            if failed {
+                tokio::time::sleep(Duration::from_secs(5)).await
+            } else {
+                std::future::pending().await
+            }
+        };
         tokio::select! {
             r = views.changed() => r?,
             r = infos.changed() => r?,
+            _ = retry => {}
         }
     }
 }

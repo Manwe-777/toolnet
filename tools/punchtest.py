@@ -16,6 +16,13 @@ server (behind a port-preserving NAT, so its public port == local port):
 laptop:
     punchtest.py laptop SERVER_IP:PORT [SECONDS]
   Sends a probe every 0.5 s and prints every echo (deduplicated by phase).
+  Prints its own public address (from STUN) for the punch mode.
+
+simultaneous punch (what iroh does), for address+port dependent filtering:
+    punchtest.py punch PORT LAPTOP_PUBLIC_IP:PORT
+  on the server, while the laptop runs: sends to the laptop's exact public
+  address every 0.5 s and echoes probes. Echoes reaching the laptop => hole
+  punching works between these two networks.
 """
 import os
 import socket
@@ -29,6 +36,43 @@ STUN = ("stun.l.google.com", 19302)
 
 def stun_packet():
     return struct.pack("!HHI", 0x0001, 0, MAGIC) + os.urandom(12)
+
+
+def mapped(data):
+    """XOR-MAPPED-ADDRESS from a STUN binding response"""
+    pos = 20
+    while pos + 4 <= len(data):
+        typ, ln = struct.unpack("!HH", data[pos:pos + 4])
+        if typ == 0x0020 and ln >= 8:
+            port = struct.unpack("!H", data[pos + 6:pos + 8])[0] ^ (MAGIC >> 16)
+            ip = struct.unpack("!I", data[pos + 8:pos + 12])[0] ^ MAGIC
+            return f"{socket.inet_ntoa(struct.pack('!I', ip))}:{port}"
+        pos += 4 + ln + (-ln % 4)
+    return None
+
+
+def punch(port, remote):
+    host, rport = remote.rsplit(":", 1)
+    dst = (host, int(rport))
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(("0.0.0.0", port))
+    sock.settimeout(0.5)
+    start, last, seen = time.time(), 0.0, set()
+    print(f"punch on :{port} -> {remote}", flush=True)
+    while (t := time.time() - start) < 300:
+        if time.time() - last > 0.5:
+            sock.sendto(b"OPEN", dst)
+            last = time.time()
+        try:
+            data, src = sock.recvfrom(2048)
+        except socket.timeout:
+            continue
+        if data.startswith(b"PROBE"):
+            sock.sendto(b"ECHO P " + data, src)
+            if src not in seen:
+                seen.add(src)
+                print(f"{t:6.1f}s probe from {src[0]}:{src[1]}", flush=True)
+    print("punch done", flush=True)
 
 
 def server(port, remote_ip):
@@ -82,6 +126,9 @@ def laptop(target, seconds):
             data, src = sock.recvfrom(2048)
         except socket.timeout:
             continue
+        if data[:2] == b"\x01\x01":
+            print(f"{t:6.1f}s public address (STUN): {mapped(data)}", flush=True)
+            continue
         if data.startswith(b"ECHO"):
             phase = data.split()[1].decode()
             got[phase] = got.get(phase, 0) + 1
@@ -93,5 +140,7 @@ def laptop(target, seconds):
 if __name__ == "__main__":
     if sys.argv[1] == "server":
         server(int(sys.argv[2]), sys.argv[3])
+    elif sys.argv[1] == "punch":
+        punch(int(sys.argv[2]), sys.argv[3])
     else:
         laptop(sys.argv[2], int(sys.argv[3]) if len(sys.argv) > 3 else 540)

@@ -17,6 +17,14 @@
 - **MagicDNS**: `<member>.<domain>` served on the tailnet IP, split DNS via
   systemd-resolved.
 - **systemd unit** with only `CAP_NET_ADMIN` and `CAP_NET_BIND_SERVICE`.
+- **Hole punching, LTE hotspot -> home: not possible on these networks.**
+  Raw UDP tests (`tools/punchtest.py`), no iroh: home filters by exact address
+  and port, and even a simultaneous punch to both sides' exact STUN-reported
+  addresses gets nothing through in either direction. LTE traffic to home
+  crosses an international backbone (~190 ms one way). So the relay is the
+  only path here, and iroh isn't at fault.
+- **Exit node from LTE** through the homelab, over an n0 relay: the internet
+  sees the home IP. Slow (~1.7 Mbit/s, 410 ms) because of the relay.
 - **First real run with TUN** (laptop + homelab, home Wi-Fi, public Nostr
   relays): tailnet ping both ways (direct, 2-3 ms), MagicDNS, 44 Mbit/s TCP
   over Wi-Fi (58 plain), the home LAN route accepted while at home without
@@ -28,10 +36,14 @@
 
 ## Next
 
-1. **Hole punching on LTE.** Both NATs measure as consistent, yet iroh never
-   got a direct path from the LTE hotspot to home. Run `tools/punchtest.py`
-   (see spike/README.md) to tell NAT filtering from an iroh issue.
-2. **Exit node from LTE** with TUN (home run done), and as systemd services.
+1. **A relay close to home.** From the LTE hotspot, home is only reachable
+   through a relay (see the hole punching result below), and n0's public relays
+   are in the US and rate limited: ~410 ms and ~1.7 Mbit/s through the exit
+   node. Options, none needing a port forward or DNS record: a small VPS relay
+   in South America reached by IP, or a relay on any device with a public IP.
+   Relays listed in the network config (item 8) go with it.
+2. **systemd service on both machines**, so MagicDNS registers with resolved
+   and nothing needs `setcap` by hand.
 3. **Owner app**: a PWA (like homelab-monitor's) holding the owner key, with
    approve / remove / routes. JS tool-db compatibility is already tested.
    Pairing by QR code: the device shows its npub, the owner scans it.
@@ -62,5 +74,9 @@
 - MagicDNS can't bind port 53 on a host that already runs a DNS server on
   `0.0.0.0:53` (the homelab). That host's own lookups of tailnet names fail;
   other devices are unaffected.
+- After a network switch, the Nostr websockets take ~75 s to time out and
+  reconnect; until then nothing is published or received (peers keep
+  working over iroh meanwhile). The node info publisher now retries; a faster
+  reconnect on network change would be better.
 - `setcap` is lost on every rebuild: run from a copy (`~/.local/bin/toolnet`)
   and re-grant only when replacing it.
