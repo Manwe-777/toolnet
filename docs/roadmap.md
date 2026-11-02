@@ -50,22 +50,22 @@
    NATs with TTL-5 packets, agree over the relay connection (`\0PUN`), then
    release iroh and start a round. On a real LTE session: check it goes direct.
    Android will need another way to hold iroh's probes (no nft).
-3. **Owner app** (in progress, `app/`): a PWA holding the owner key, with
-   approve by QR scan / remove / routes. Devices show their QR with
+2. **Phone as a device.** The owner app (`app/`, deployed on the homelab) is
+   done: approve by QR scan, remove, routes, network list. Devices show their QR with
    `toolnet id --qr`. Needs HTTPS (camera) when served to the phone.
    Then the phone as a device: an Android VpnService shell around the core.
-4. **Owner key safety**: NIP-46 remote signer or the PWA, instead of
+3. **Owner key safety**: NIP-46 remote signer or the PWA, instead of
    `owner.key` on a laptop.
-5. **IPv6** inside the tailnet (ULA per network), and IPv6 exit traffic.
-6. **Exit node DNS**: send all DNS through the exit node while it's in use
+4. **IPv6** inside the tailnet (ULA per network), and IPv6 exit traffic.
+5. **Exit node DNS**: send all DNS through the exit node while it's in use
    (today only the tailnet domain is split; other queries use local DNS).
-7. **ACLs** (who may reach whom), evaluated on each device from the
+6. **ACLs** (who may reach whom), evaluated on each device from the
    owner-signed policy.
-8. **Relay**: a toolnet-owned TLS CA for relays reached by IP (decisions.md),
+7. **Relay**: a toolnet-owned TLS CA for relays reached by IP (decisions.md),
    and relays listed in the network config.
-9. **Mobile**: Android VpnService / iOS NetworkExtension shells around the Rust
+8. **Mobile**: Android VpnService / iOS NetworkExtension shells around the Rust
    core.
-10. **Performance**: batch TUN reads, GSO, multiple queues. Today: ~800 Mbit/s
+9. **Performance**: batch TUN reads, GSO, multiple queues. Today: ~800 Mbit/s
     TCP through the full daemon in namespaces (release build, one core).
 
 ## Known issues
