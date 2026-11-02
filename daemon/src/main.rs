@@ -65,7 +65,11 @@ enum Cmd {
         relays: Vec<String>,
     },
     /// Print this device's ids
-    Id,
+    Id {
+        /// Also print a QR code to scan with the owner app
+        #[arg(long)]
+        qr: bool,
+    },
     /// Network owner commands
     Owner {
         #[command(subcommand)]
@@ -145,6 +149,15 @@ struct Config {
     owner: String,
     net: String,
     relays: Vec<String>,
+}
+
+/// What a device's QR code carries: `toolnet:join?device=<npub>&name=<name>`
+fn join_payload(npub: &str, name: &str) -> String {
+    let name: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || "-._".contains(c) { c.to_string() } else { format!("%{:02X}", c as u32 & 0xff) })
+        .collect();
+    format!("toolnet:join?device={npub}&name={name}")
 }
 
 pub fn now() -> u64 {
@@ -254,11 +267,23 @@ async fn main() -> Result<()> {
     let state = State::new(cli.state)?;
     match cli.cmd {
         Cmd::Init { owner, net, relays } => init(&state, owner, net, relays),
-        Cmd::Id => {
+        Cmd::Id { qr } => {
             let keys = state.device_keys()?;
-            println!("device:   {}", keys.public_key().to_bech32()?);
+            let npub = keys.public_key().to_bech32()?;
+            println!("device:   {npub}");
             println!("hex:      {}", keys.public_key().to_hex());
             println!("endpoint: {}", state.endpoint_key()?.public());
+            if qr {
+                let payload = join_payload(&npub, &hostname());
+                let code = qrcode::QrCode::new(payload.as_bytes())?;
+                let art = code
+                    .render::<qrcode::render::unicode::Dense1x2>()
+                    .dark_color(qrcode::render::unicode::Dense1x2::Light)
+                    .light_color(qrcode::render::unicode::Dense1x2::Dark)
+                    .quiet_zone(true)
+                    .build();
+                println!("\nScan with the toolnet owner app to approve this device:\n{art}\n{payload}");
+            }
             Ok(())
         }
         Cmd::Owner { cmd } => owner(&state, cmd).await,

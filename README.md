@@ -33,6 +33,7 @@ B=target/release/toolnet
 
 $B owner create --net home                    # once, on the owner's machine
 $B init --owner npub1<owner> --net home        # on each device
+$B id --qr                                     # QR code for the owner app
 $B owner approve npub1<device> --name laptop   # owner approves it
 sudo setcap cap_net_admin,cap_net_bind_service+ep $B
 $B up                                          # on each device

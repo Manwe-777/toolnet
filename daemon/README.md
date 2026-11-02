@@ -24,6 +24,7 @@ Each device:
 
 ```bash
 toolnet init --owner npub1... --net home  # prints this device's npub
+toolnet id --qr                           # or show it as a QR code: toolnet:join?device=npub1...&name=<host>
 # owner:  toolnet owner approve npub1<device> --name laptop
 sudo setcap cap_net_admin+ep $(which toolnet)
 toolnet up                                # or: toolnet up --no-tun (no privileges)
