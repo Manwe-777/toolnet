@@ -13,6 +13,7 @@ Log decisions here with a date. Update when resuming work.
 | 2026-11-02 | **Path A: fully independent of Tailscale.** Path B is dropped. | The project is a backup plan in case Tailscale gets expensive or goes away, so no dependency on its client or control protocol. |
 | 2026-11-02 | **All peers are equal, and roles are capabilities.** "Reachable" peers (public IP or port forward) can serve STUN and relay. Others, such as phones, are plain peers. The owner is a key, not a server, and only needs to be online to change membership. | Same model as Hyperswarm/HyperDHT. There's no server-like node, which also settles the old mobile question (phones are just peers). |
 | 2026-11-02 | **Don't use 100.64.0.0/10 by default.** Default tailnet range is configurable, 10.213.0.0/16 in docs and spike. | toolnet is a Tailscale backup, so it must run next to Tailscale without route conflicts (the homelab runs Tailscale). |
+| 2026-11-02 | **Self-host the relay** (homelab, port forwarded) and drop pkarr lookup, using tool-db `node` info for addresses. | LTE spike: the n0 US relay added ~385 ms RTT, carrier NAT blocked hole punching so the relay carries all traffic, and redials failed while n0's lookup was unreachable. |
 | 2026-11-02 | **Spike A1 started** in `spike/`: iroh 1.4 + tun-rs works, 640 Mbit/s direct in netns. | Validates Rust + iroh as viable; real NAT test pending. |
 
 ## Proposed, not decided

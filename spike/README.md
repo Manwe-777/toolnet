@@ -20,6 +20,39 @@ test-netns.sh      two peers in network namespaces, unprivileged and offline
 QUIC reports `max_datagram_size` 1414 on a direct path. The TUN MTU is 1150
 to leave headroom for relay paths. Not measured yet.
 
+## Results: laptop <-> homelab (2026-11-02)
+
+Server on the home LAN, laptop first on home Wi-Fi, then on an LTE phone
+hotspot (behind both the phone's NAT and the carrier's NAT; public IP in a
+different ISP). Both peers were configured **by endpoint id only**.
+
+| | Result |
+|---|---|
+| Same LAN | `DIRECT` to 192.168.1.2. 14 Mbit/s, the Wi-Fi limit (raw link 18 Mbit/s) |
+| Switch to LTE | **Recovered in ~2 s**: the *same connection* migrated to the n0 relay (`use1-1`), no reconnect |
+| On LTE | `RELAY` for the whole ~6 min, 0% loss, ~385 ms RTT. **Hole punching never got a direct path** (carrier NAT) |
+| Control | **SSH to the homelab through the tunnel** (`ssh 10.213.0.2`) while `server.local` was unreachable |
+| Relay throughput | Inconclusive: 5 MB didn't finish in 50 s, and pings dropped during the transfer. Needs a proper test |
+| Tailscale on the server | Untouched, ran side by side (10.213.0.0/24 vs 100.64.0.0/10) |
+
+What we learned:
+
+1. **Relay location matters.** n0's relay is in US East, so LTE to
+   relay to home costs ~385 ms. A self-hosted relay at home, reachable with a
+   port forward, should cut that to the LTE latency itself. That moves
+   "self-host the relay" from nice-to-have to required.
+2. **Redials depend on n0's address lookup (pkarr).** During the first
+   attempt the hotspot lost internet, and every redial failed with "no
+   addressing information" until it came back. In toolnet the peer's
+   addresses and relay come from tool-db `node` info, cached locally, so a
+   redial never depends on a lookup service.
+3. **Docker bridges flood the advertised addresses.** The server advertised
+   ~30 `172.x`/`192.168.x` bridge addresses, and iroh warned "too many
+   addresses". Filter them with `addr_filter` (only physical interfaces, or
+   an allowlist).
+4. iroh tries IPv6 lookups on a network without IPv6 ("no route to host").
+   This is only noise, but worth filtering in logs.
+
 ## Run it across real NATs
 
 On each machine:

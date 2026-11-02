@@ -20,7 +20,9 @@ Goal: show that tool-db can replace the coordination server.
 - `node` info carries the iroh endpoint id and relay URL instead of raw endpoints.
 - **Done when** two machines behind different NATs connect, and an exit node works.
 - Status 2026-11-02: `spike/` works across network namespaces on the direct path
-  (640 Mbit/s release). Pending: real NAT/relay test on two machines, and exit node.
+  (640 Mbit/s release). Laptop on LTE <-> homelab works via relay, migrates
+  networks in ~2 s, no direct path through carrier NAT (see spike/README.md).
+  Pending: self-hosted relay, relay throughput, exit node.
 
 ## M2: daily driver
 
