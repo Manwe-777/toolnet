@@ -8,6 +8,21 @@ use tracing::{info, warn};
 
 use crate::engine::Cidr;
 
+/// With file capabilities (`setcap`), the helpers we run (`ip`, `nft`,
+/// `resolvectl`) wouldn't get our network capabilities: make them ambient so
+/// they're inherited. A no-op when running as root or without capabilities.
+pub fn inherit_capabilities() {
+    use caps::{CapSet, Capability};
+    for cap in [Capability::CAP_NET_ADMIN, Capability::CAP_NET_BIND_SERVICE] {
+        if caps::has_cap(None, CapSet::Permitted, cap).unwrap_or(false) {
+            let ok = caps::raise(None, CapSet::Inheritable, cap).and_then(|_| caps::raise(None, CapSet::Ambient, cap));
+            if let Err(e) = ok {
+                warn!("can't pass {cap} to helper commands: {e}");
+            }
+        }
+    }
+}
+
 fn run(cmd: &str, args: &[&str]) -> Result<()> {
     let out = Command::new(cmd).args(args).output().with_context(|| format!("running {cmd}"))?;
     if !out.status.success() {

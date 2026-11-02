@@ -530,6 +530,7 @@ async fn resolve_hosts(urls: impl IntoIterator<Item = String>) -> std::collectio
 }
 
 async fn up(state: &State, opts: UpOpts) -> Result<()> {
+    os::inherit_capabilities();
     let UpOpts { no_tun, dev, offline, bind, iroh_relays, advertise_routes, exit_node, no_dns } = opts;
     let (keys, cfg) = (state.device_keys()?, state.config()?);
     let id = Identity { device: keys.clone(), owner: parse_pubkey(&cfg.owner)?, net: cfg.net.clone() };

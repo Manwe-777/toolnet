@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.104"
 bytes = "1.12.1"
+caps = "0.5"
 clap = { version = "4", features = ["derive", "env"] }
 data-encoding = "2.11.1"
 dirs = "7.0.0"
