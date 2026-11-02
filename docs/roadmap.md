@@ -22,7 +22,10 @@
   and port, and even a simultaneous punch to both sides' exact STUN-reported
   addresses gets nothing through in either direction. LTE traffic to home
   crosses an international backbone (~190 ms one way). So the relay is the
-  only path here, and iroh isn't at fault.
+  only path here, and iroh isn't at fault. The reason: home is behind the
+  ISP's carrier-grade NAT (the router's WAN address is 10.x.x.x, a private
+  one), so UPnP mappings (which iroh and Tailscale both create on the home
+  router) only open the inner NAT. Neither network has IPv6.
 - **Exit node from LTE** through the homelab, over an n0 relay: the internet
   sees the home IP. Slow (~1.7 Mbit/s, 410 ms) because of the relay.
 - **First real run with TUN** (laptop + homelab, home Wi-Fi, public Nostr
