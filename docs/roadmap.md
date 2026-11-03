@@ -48,7 +48,10 @@
    iroh's first probes did exactly that. Now a firewall rule holds iroh's
    full-size packets to a relayed peer's public address, both sides open their
    NATs with TTL-5 packets, agree over the relay connection (`\0PUN`), then
-   release iroh and start a round. On a real LTE session: check it goes direct.
+   release iroh and start a round. **First real LTE session (2026-11-03):
+   direct, tailnet ping 92-130 ms instead of ~400 via the relay.** The
+   hotspot link itself was flaky that evening (a dip of a few minutes, relay
+   round trips up to 19 s), so time-to-direct still needs a clean measurement.
    Android will need another way to hold iroh's probes (no nft).
 2. **Phone as a device.** The owner app (`app/`, deployed on the homelab) is
    done: approve by QR scan, remove, routes, network list. Devices show their QR with
