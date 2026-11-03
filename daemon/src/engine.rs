@@ -18,7 +18,9 @@ use iroh::{
 };
 use tokio::{sync::RwLock, task::JoinHandle};
 use tracing::{debug, info, warn};
-use tun_rs::{AsyncDevice, DeviceBuilder};
+use tun_rs::AsyncDevice;
+#[cfg(not(target_os = "android"))]
+use tun_rs::DeviceBuilder;
 
 pub const ALPN: &[u8] = b"toolnet/0";
 /// Short-lived extra connections that only make iroh start a hole punching
@@ -213,6 +215,9 @@ impl Engine {
     }
 
     /// Creates the TUN device and starts forwarding packets to peers
+    /// Creates and configures a TUN device (Android apps can't: they get one
+    /// from VpnService, see `start_tun_fd`)
+    #[cfg(not(target_os = "android"))]
     pub async fn start_tun(&self, name: &str, ip: Ipv4Addr, prefix: u8) -> Result<()> {
         let dev = DeviceBuilder::new()
             .name(name)

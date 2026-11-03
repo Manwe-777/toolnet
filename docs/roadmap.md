@@ -53,10 +53,14 @@
    hotspot link itself was flaky that evening (a dip of a few minutes, relay
    round trips up to 19 s), so time-to-direct still needs a clean measurement.
    Android will need another way to hold iroh's probes (no nft).
-2. **Phone as a device.** The owner app (`app/`, deployed on the homelab) is
-   done: approve by QR scan, remove, routes, network list. Devices show their QR with
-   `toolnet id --qr`. Needs HTTPS (camera) when served to the phone.
-   Then the phone as a device: an Android VpnService shell around the core.
+2. **Android app** (`android/`, WIP). Works: the Rust core over JNI in a
+   VpnService, setup + join QR/code, approved from the owner side, tailnet and
+   subnet routes. **First test (2026-11-03): phone on LTE (carrier NAT) ->
+   homelab direct, ping 76-86 ms, LAN via the subnet route, Navidrome over
+   `10.213.0.2:4533`.** Next: survive network switches and reboots (always-on
+   VPN), MagicDNS (Android VPNs can't do split DNS: answer DNS inside the
+   tunnel), exit node, smaller APK (strip the .so), release signing, and a
+   hold for iroh's first probes without nft.
 3. **Owner key safety**: NIP-46 remote signer or the PWA, instead of
    `owner.key` on a laptop.
 4. **IPv6** inside the tailnet (ULA per network), and IPv6 exit traffic.

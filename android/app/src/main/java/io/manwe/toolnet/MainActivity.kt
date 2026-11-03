@@ -109,6 +109,7 @@ class MainActivity : Activity() {
     }
 
     private fun renderMain(code: String) {
+        android.util.Log.i(ToolnetVpnService.TAG, "join code: $code")
         val status = cardView()
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         row.addView(label("Connected", 18f, fg, bold = true).apply {
