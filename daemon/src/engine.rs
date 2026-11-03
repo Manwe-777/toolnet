@@ -620,6 +620,21 @@ impl Engine {
         });
     }
 
+    /// The selected path to each connected peer, by name: (direct, rtt)
+    pub async fn paths(&self) -> HashMap<String, (bool, Duration)> {
+        let state = self.state.read().await;
+        state
+            .peers
+            .values()
+            .filter_map(|p| {
+                let conn = state.conns.get(&p.endpoint)?;
+                let paths = conn.paths();
+                let path = paths.iter().find(|p| p.is_selected())?;
+                Some((p.name.clone(), (!path.is_relay(), path.rtt())))
+            })
+            .collect()
+    }
+
     pub async fn status(&self) -> Vec<String> {
         let state = self.state.read().await;
         let mut lines: Vec<String> = state

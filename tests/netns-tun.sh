@@ -53,8 +53,9 @@ for n in alpha router; do
   "$BIN" --state "$W/owner" owner approve "$("$BIN" --state "$W/$n" id | awk '/^hex/{print $2}')" --name "$n"
 done
 
+export TOOLNET_SOCKET=$W/alpha.sock
 inns alpha "$BIN" --state "$W/alpha" up --offline > "$W/alpha.log" 2>&1 & pids+=($!)
-inns router "$BIN" --state "$W/router" up --offline --advertise-routes 192.168.77.0/24 > "$W/router.log" 2>&1 & pids+=($!)
+TOOLNET_SOCKET=$W/router.sock inns router "$BIN" --state "$W/router" up --offline --advertise-routes 192.168.77.0/24 > "$W/router.log" 2>&1 & pids+=($!)
 wait_for "$W/alpha.log" "connected peer=router" 30
 wait_for "$W/router.log" "routing for the tailnet" 10
 
@@ -107,6 +108,30 @@ inns alpha ip link del home0
 via=$(inns alpha ip -o route get 192.168.77.10 | grep -o 'dev [^ ]*')
 [ "$via" = "dev toolnet0" ] || { echo "FAIL: 192.168.77.10 goes $via"; exit 1; }
 echo "  left it: 192.168.77.10 -> $via"
+
+echo "=== control socket: status, disconnect, connect"
+"$BIN" status | sed 's/^/  /'
+"$BIN" status --json | python3 -c '
+import json, sys
+s = json.load(sys.stdin); r = {p["name"]: p for p in s["peers"]}["router"]
+assert s["state"] == "member" and s["connected"] and s["ip"] == "10.213.0.1", s
+assert r["path"] == "direct" and r["online"] and r["routes"] == ["192.168.77.0/24"], r
+print("  json ok: router", r["path"], r["rtt_ms"], "ms")'
+"$BIN" disconnect > /dev/null
+for _ in $(seq 20); do inns alpha ip link show toolnet0 > /dev/null 2>&1 || break; sleep 0.2; done
+inns alpha ip link show toolnet0 > /dev/null 2>&1 && { echo "FAIL: toolnet0 still there"; exit 1; }
+[ -z "$(inns alpha ip route show table 5213)" ] || { echo "FAIL: routes left behind"; exit 1; }
+"$BIN" status --json | python3 -c 'import json,sys; s=json.load(sys.stdin); assert not s["connected"] and all(p["path"] is None for p in s["peers"]), s'
+echo "  disconnected: no toolnet0, no routes, no peers"
+"$BIN" connect > /dev/null
+for _ in $(seq 30); do inns alpha ping -c 1 -W 1 192.168.77.10 > /dev/null 2>&1 && break; sleep 0.5; done
+inns alpha ping -c 2 -i 0.2 -W 2 192.168.77.10 | tail -1 | sed 's/^/  reconnected: /'
+inns alpha python3 -c '
+import socket
+q = b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00" + b"".join(bytes([len(l)]) + l.encode() for l in "router.home.toolnet".split(".")) + b"\x00\x00\x01\x00\x01"
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(2)
+s.sendto(q, ("10.213.0.1", 53)); r, _ = s.recvfrom(512); assert r[-4:] == bytes([10,213,0,2])
+print("  MagicDNS back")'
 
 echo "=== owner withdraws the route"
 "$BIN" --state "$W/owner" owner routes router

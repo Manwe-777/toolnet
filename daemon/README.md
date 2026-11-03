@@ -34,6 +34,22 @@ toolnet up                                # or: toolnet up --no-tun (no privileg
 shows it as the owner. `toolnet owner remove <name>` removes a device and
 rotates the group key.
 
+While it runs, `toolnet up` serves a control socket (`/run/toolnet/toolnet.sock`,
+`--socket` / `TOOLNET_SOCKET` to override; one JSON request per line, see
+`src/ipc.rs`). It backs these commands and the tray (`tray/`):
+
+```bash
+toolnet status [--json]          # live: peers, direct/relay, rtt, exit node
+toolnet disconnect               # tunnel down (no TUN, routes, DNS, peers); keeps following the network
+toolnet connect
+toolnet exit-node homelab        # or: toolnet exit-node none
+```
+
+Anyone may read the status; changes need root, the daemon's own user, or the
+operator (`up --operator <user>` / `TOOLNET_OPERATOR`). Choices made this way
+are saved in `prefs.json` in the state dir and win over `--exit-node` after a
+restart.
+
 State lives in `~/.local/share/toolnet` (`--state` / `TOOLNET_STATE` to
 override): `device.key`, `endpoint.key`, `owner.key` (owner only, all
 `0600`) and `config.json` (owner, network, Nostr relays).

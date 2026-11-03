@@ -38,6 +38,13 @@
   `nft` isn't on a Debian user's PATH; `resolvectl` blocked the main loop on a
   polkit prompt; Docker's iptables FORWARD DROP broke the exit node.
 
+- **Control socket + tray** (2026-11-03): `toolnet status/connect/disconnect/
+  exit-node` talk to the running daemon; `toolnet-tray` (StatusNotifierItem,
+  tested on Omarchy's bar over D-Bus) shows state, devices with direct/relay
+  and rtt, and switches the exit node. Node info is republished every 5 min so
+  "online" means something. macOS tray (tray-icon crate) comes with the macOS
+  port.
+
 ## Next
 
 1. **Confirm coordinated hole punching on LTE.** Root cause found and fixed

@@ -3,7 +3,9 @@
 #   sudo packaging/install.sh target/release/toolnet --state-from <dir> \
 #        --args "--exit-node homelab"
 #
-# Flags for `toolnet up` live in a drop-in (toolnet.service.d/args.conf);
+# Flags for `toolnet up` live in a drop-in (toolnet.service.d/args.conf), the
+# user allowed to connect / disconnect / pick the exit node (the tray) in
+# operator.conf;
 # more logging: `sudo systemctl edit toolnet` and add
 #   [Service]
 #   Environment=RUST_LOG=info,toolnet=debug
@@ -19,6 +21,7 @@ Wants=network-online.target
 [Service]
 Environment=TOOLNET_STATE=/var/lib/toolnet
 Environment=TOOLNET_ARGS=
+Environment=TOOLNET_OPERATOR=
 Environment=RUST_LOG=info
 ExecStart=/usr/local/bin/toolnet up $TOOLNET_ARGS
 Restart=on-failure
@@ -26,6 +29,9 @@ RestartSec=5
 
 StateDirectory=toolnet
 StateDirectoryMode=0700
+# The control socket, /run/toolnet/toolnet.sock (requests are checked by uid)
+RuntimeDirectory=toolnet
+RuntimeDirectoryMode=0755
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 NoNewPrivileges=yes

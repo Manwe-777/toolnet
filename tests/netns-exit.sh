@@ -57,7 +57,8 @@ done
 
 # Like a Docker host: iptables FORWARD policy DROP
 inns exit iptables -P FORWARD DROP
-inns exit "$BIN" --state "$W/exit" up --offline --advertise-exit-node > "$W/exit.log" 2>&1 & pids+=($!)
+TOOLNET_SOCKET=$W/exit.sock inns exit "$BIN" --state "$W/exit" up --offline --advertise-exit-node > "$W/exit.log" 2>&1 & pids+=($!)
+export TOOLNET_SOCKET=$W/alpha.sock
 inns alpha "$BIN" --state "$W/alpha" up --offline --exit-node exit > "$W/alpha.log" 2>&1 & pids+=($!)
 wait_for "$W/alpha.log" "connected peer=exit" 30
 echo "=== before approval: $TARGET must be unreachable"
@@ -81,6 +82,16 @@ reach 10.213.0.2 && echo "  tailnet still fine (10.213.0.2)"
 sleep 6
 plain "$W/alpha.log" | grep -qE "connection closed" && { echo "FAIL: peer connection dropped after enabling exit routing"; exit 1; }
 echo "  peer connection stayed up"
+
+echo "=== exit node switched at runtime over the control socket"
+"$BIN" exit-node none | sed 's/^/  /'
+if reach $TARGET; then echo "FAIL: still reaching the internet with no exit node"; exit 1; fi
+echo "  no exit node: $TARGET unreachable"
+if "$BIN" exit-node nosuch > "$W/bad.out" 2>&1; then echo "FAIL: accepted an unknown exit node"; exit 1; fi
+grep -o "isn't an exit node" "$W/bad.out" | sed 's/^/  rejected: /'
+"$BIN" exit-node exit > /dev/null
+reach $TARGET && echo "  exit node back: $TARGET reachable" || { echo "FAIL: exit node not used again"; exit 1; }
+python3 -c "import json;p=json.load(open('$W/alpha/prefs.json'));assert p['exit_node']=='exit',p;print('  saved:',p)"
 
 echo "=== owner withdraws the exit node"
 "$BIN" --state "$W/owner" owner routes exit

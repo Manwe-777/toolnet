@@ -9,6 +9,8 @@ pub mod control;
 pub mod crypto;
 pub mod dns;
 pub mod engine;
+#[cfg(unix)]
+pub mod ipc;
 pub mod model;
 pub mod node;
 #[cfg(target_os = "linux")]

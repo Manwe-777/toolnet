@@ -1,0 +1,16 @@
+# The toolnet tray icon, started with the desktop session. Installed by
+# packaging/install.sh into /etc/systemd/user; enable it once per user:
+#
+#   systemctl --user enable --now toolnet-tray
+[Unit]
+Description=toolnet tray icon
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=/usr/local/bin/toolnet-tray
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

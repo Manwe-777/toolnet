@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["spike", "daemon", "android/rust"]
+members = ["spike", "daemon", "android/rust", "tray"]
 
 # The Android core: small (it ships inside the APK), no debug symbols
 [profile.android]

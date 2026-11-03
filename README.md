@@ -53,7 +53,13 @@ $B owner routes homelab 0.0.0.0/0              # owner allows it
 $B up --exit-node homelab                      # on the laptop
 ```
 
-To run as a service, see [packaging/toolnet.service](packaging/toolnet.service).
+To run as a service, with the tray icon on a desktop:
+
+```bash
+cargo build --release -p toolnet -p toolnet-tray
+sudo packaging/install.sh target/release/toolnet   # also installs toolnet-tray if built
+systemctl --user enable --now toolnet-tray         # once, as your user
+```
 Usage details and the exact data format are in [daemon/README.md](daemon/README.md).
 
 ## Repo
@@ -62,12 +68,13 @@ Usage details and the exact data format are in [daemon/README.md](daemon/README.
 |---|---|
 | [android/](android) | Android app: Kotlin VpnService shell around the Rust core (`android/rust`); `build.sh`, `publish.sh` |
 | [app/](app) | Owner app (PWA): approve devices by QR scan, remove them (key rotation), routes |
-| [daemon/](daemon) | The `toolnet` binary (Rust): tool-db client, crypto, control plane, iroh + TUN engine, DNS |
+| [daemon/](daemon) | The `toolnet` binary (Rust): tool-db client, crypto, control plane, iroh + TUN engine, DNS, control socket |
+| [tray/](tray) | `toolnet-tray`: tray icon for Linux desktops (connect / disconnect, exit node, devices) |
 | [tests/](tests) | End-to-end tests: local ToolDB relay, JS compatibility, namespaces with real TUN traffic, subnet routes, exit node |
 | [spike/](spike) | The first connectivity spike and its field results (LAN, LTE, relays) |
 | [tools/](tools) | `natcheck.py` (NAT mapping probe), `punchtest.py` (raw UDP hole-punch test) |
 | [relay/](relay) | Self-hostable iroh relay (Docker), for a machine reachable from the internet |
-| [packaging/](packaging) | systemd unit |
+| [packaging/](packaging) | systemd units (daemon, tray) and `install.sh` |
 | [docs/](docs) | Design: architecture, data model, flows, decisions, roadmap |
 
 ## Docs
@@ -89,8 +96,8 @@ Usage details and the exact data format are in [daemon/README.md](daemon/README.
 cargo test -p toolnet        # unit: crypto, membership/rotation, CIDR, DNS
 tests/e2e-local.sh           # owner + 2 devices on a local ToolDB relay: join, connect, remove
 tests/compat.sh              # JS tool-db reads Rust's data; Rust accepts a JS approval
-tests/netns-tun.sh           # TUN traffic in namespaces, MagicDNS, subnet route on/off
-tests/netns-exit.sh          # exit node: internet only through the exit, peer traffic bypasses
+tests/netns-tun.sh           # TUN traffic in namespaces, MagicDNS, subnet route on/off, disconnect/connect
+tests/netns-exit.sh          # exit node: internet only through the exit, peer traffic bypasses, switched at runtime
 tests/app-compat.sh          # owner app logic (JS) drives Rust devices: approve by QR payload, routes, remove
 tests/netns-nat.sh           # two devices behind NAT routers + local relays: hole punching goes direct (needs iroh-relay)
 tests/netns-roam.sh          # network switch: reconnect to Nostr at once, republish, keep following

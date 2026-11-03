@@ -14,7 +14,7 @@ use nostr_sdk::prelude::{Keys, PublicKey, SecretKey, ToBech32};
 use tracing::{info, warn};
 
 use toolnet::{
-    crypto, dns, engine,
+    crypto, dns, engine, ipc,
     model::{self, Member, NetConfig, Status, View},
     node::{MEMBERSHIP_GRACE, Node, NodeOpts, log_status, peers_of},
     os,
@@ -30,6 +30,9 @@ struct Cli {
     /// State directory: keys and config
     #[arg(long, env = "TOOLNET_STATE", global = true)]
     state: Option<PathBuf>,
+    /// The daemon's control socket
+    #[arg(long, env = "TOOLNET_SOCKET", global = true, default_value = ipc::DEFAULT_SOCKET)]
+    socket: PathBuf,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -58,8 +61,18 @@ enum Cmd {
         #[command(subcommand)]
         cmd: OwnerCmd,
     },
-    /// Show the network as this device sees it
-    Status,
+    /// Show this device's status (from the running daemon, else from the relays)
+    Status {
+        /// The daemon's status as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Bring the tunnel up (the daemon must be running)
+    Connect,
+    /// Take the tunnel down, keeping the daemon running
+    Disconnect,
+    /// Send internet traffic through this member, or `none`
+    ExitNode { name: String },
     /// Run: follow the network, publish our addresses, connect to peers
     Up {
         /// Don't create a TUN device; only connect and ping peers (no privileges needed)
@@ -93,6 +106,10 @@ enum Cmd {
         /// Don't serve MagicDNS (<member>.<domain> names)
         #[arg(long)]
         no_dns: bool,
+        /// This user (name or uid) may connect, disconnect and pick the exit
+        /// node through the control socket (the tray), besides root
+        #[arg(long, env = "TOOLNET_OPERATOR")]
+        operator: Option<String>,
     },
 }
 
@@ -171,12 +188,34 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Owner { cmd } => owner(&state, cmd).await,
-        Cmd::Status => status(&state).await,
-        Cmd::Up { no_tun, dev, offline, bind, iroh_relays, relay_ca, mut advertise_routes, advertise_exit_node, exit_node, no_dns } => {
+        Cmd::Status { json } => match ipc::request(&cli.socket, &ipc::Request::Status).await {
+            Ok(ipc::Response { status: Some(s), .. }) if json => {
+                println!("{}", serde_json::to_string_pretty(&s)?);
+                Ok(())
+            }
+            Ok(ipc::Response { status: Some(s), .. }) => {
+                print_status(&s);
+                Ok(())
+            }
+            Ok(r) => bail!("{}", r.error.unwrap_or_default()),
+            Err(e) if json => Err(e),
+            Err(e) => {
+                println!("({e:#}; asking the relays instead)\n");
+                status(&state).await
+            }
+        },
+        Cmd::Connect => control(&cli.socket, ipc::Request::Connect).await,
+        Cmd::Disconnect => control(&cli.socket, ipc::Request::Disconnect).await,
+        Cmd::ExitNode { name } => {
+            let name = (name != "none" && !name.is_empty()).then_some(name);
+            control(&cli.socket, ipc::Request::ExitNode { name }).await
+        }
+        Cmd::Up { no_tun, dev, offline, bind, iroh_relays, relay_ca, mut advertise_routes, advertise_exit_node, exit_node, no_dns, operator } => {
             if advertise_exit_node {
                 advertise_routes.push("0.0.0.0/0".parse()?);
             }
-            up(&state, UpOpts { no_tun, dev, offline, bind, iroh_relays, relay_ca, advertise_routes, exit_node, no_dns }).await
+            let socket = cli.socket;
+            up(&state, UpOpts { no_tun, dev, offline, bind, iroh_relays, relay_ca, advertise_routes, exit_node, no_dns, operator, socket }).await
         }
     }
 }
@@ -353,6 +392,44 @@ fn print_view(view: Option<&View>) {
     }
 }
 
+/// Sends a change to the daemon and prints the resulting status
+async fn control(socket: &std::path::Path, req: ipc::Request) -> Result<()> {
+    let r = ipc::request(socket, &req).await?;
+    match (r.ok, r.status) {
+        (true, Some(s)) => {
+            print_status(&s);
+            Ok(())
+        }
+        _ => bail!("{}", r.error.unwrap_or_else(|| "request failed".into())),
+    }
+}
+
+fn print_status(s: &ipc::DaemonStatus) {
+    let me = match (&s.name, s.ip) {
+        (Some(n), Some(ip)) => format!("{n} {ip}"),
+        _ => s.device.clone(),
+    };
+    let conn = if !s.connected { "disconnected" } else if s.state == "member" { "connected" } else { s.state.as_str() };
+    println!("toolnet {} · network {} · {me} · {conn}", s.version, s.net);
+    if let Some(exit) = &s.exit_node {
+        println!("exit node: {exit}{}", if s.exit_active { "" } else { " (not available right now)" });
+    }
+    for p in &s.peers {
+        let path = match (&p.path, p.rtt_ms) {
+            (Some(path), Some(rtt)) => format!("{path} {rtt} ms"),
+            _ if p.online => "online".into(),
+            _ => "offline".into(),
+        };
+        let mut tags = vec![];
+        if p.exit_node {
+            tags.push("exit node".to_string());
+        }
+        tags.extend(p.routes.iter().cloned());
+        let tags = if tags.is_empty() { String::new() } else { format!("  [{}]", tags.join(", ")) };
+        println!("  {:<12} {:<15} {:<28} {path}{tags}", p.name, p.ip, p.dns);
+    }
+}
+
 async fn status(state: &State) -> Result<()> {
     let (keys, cfg) = (state.device_keys()?, state.config()?);
     let owner = parse_pubkey(&cfg.owner)?;
@@ -381,6 +458,8 @@ struct UpOpts {
     advertise_routes: Vec<engine::Cidr>,
     exit_node: Option<String>,
     no_dns: bool,
+    operator: Option<String>,
+    socket: PathBuf,
 }
 
 /// IPv4 addresses of the hosts in these URLs (relays we must reach directly)
@@ -404,9 +483,131 @@ async fn resolve_hosts(urls: impl IntoIterator<Item = String>) -> std::collectio
     out
 }
 
+/// What we set up on the OS for the tunnel, so it can be taken down again
+/// (disconnect, or exit) and brought back
+#[derive(Default)]
+struct Tunnel {
+    ip: Option<Ipv4Addr>,
+    routes: Option<os::Routes>,
+    router: bool,
+    exit: Option<os::ExitRouting>,
+    dns: Option<tokio::task::JoinHandle<()>>,
+    dns_registered: bool,
+}
+
+impl Tunnel {
+    async fn down(&mut self, engine: &engine::Engine, dev: &str) {
+        if let Some(r) = self.exit.take() {
+            r.disable();
+        }
+        if let Some(r) = self.routes.take() {
+            r.teardown();
+        }
+        if std::mem::take(&mut self.dns_registered) {
+            dns::unregister_resolved(dev);
+        }
+        if let Some(t) = self.dns.take() {
+            t.abort();
+        }
+        if std::mem::take(&mut self.router) {
+            os::disable_router();
+        }
+        if self.ip.take().is_some() {
+            engine.stop_tun().await;
+            info!("tunnel down");
+        }
+    }
+}
+
+/// Members we may use as exit node: allowed by the owner and offered
+fn exit_nodes(view: &View, me: &PublicKey) -> Vec<String> {
+    view.config
+        .members
+        .values()
+        .filter(|m| {
+            peers_of(view, me, Some(&m.name)).iter().any(|p| p.name == m.name && p.routes.iter().any(|r| r.len == 0))
+        })
+        .map(|m| m.name.clone())
+        .collect()
+}
+
+/// What the control socket reports (paths are added live from the engine)
+fn daemon_status(
+    cfg: &Config,
+    keys: &Keys,
+    status: &Status,
+    view: Option<&View>,
+    prefs: &ipc::Prefs,
+    exit_active: bool,
+) -> ipc::DaemonStatus {
+    let me = keys.public_key();
+    let mut s = ipc::DaemonStatus {
+        version: env!("CARGO_PKG_VERSION").into(),
+        state: match status {
+            Status::Member => "member",
+            Status::NotMember { .. } => "pending",
+            Status::NoNetwork => "no network",
+        }
+        .into(),
+        connected: prefs.connected,
+        net: cfg.net.clone(),
+        device: me.to_bech32().unwrap_or_default(),
+        exit_node: prefs.exit_node.clone(),
+        exit_active,
+        ..Default::default()
+    };
+    let Some(view) = view else { return s };
+    let domain = view.config.dns_domain();
+    s.domain = domain.clone();
+    if let Some(m) = view.config.members.get(&me.to_hex()) {
+        s.name = Some(m.name.clone());
+        s.ip = Some(m.ip);
+    }
+    s.exit_nodes = exit_nodes(view, &me);
+    let routed = peers_of(view, &me, None);
+    for (key, m) in &view.config.members {
+        let Ok(pk) = PublicKey::from_hex(key) else { continue };
+        if pk == me {
+            continue;
+        }
+        let node = view.nodes.get(&pk);
+        s.peers.push(ipc::PeerStatus {
+            name: m.name.clone(),
+            ip: m.ip,
+            dns: format!("{}.{domain}", dns::label(&m.name)),
+            online: node.is_some_and(|n| now().saturating_sub(n.updated_at) < 15 * 60),
+            path: None,
+            rtt_ms: None,
+            exit_node: s.exit_nodes.contains(&m.name),
+            routes: routed
+                .iter()
+                .find(|p| p.name == m.name)
+                .map(|p| p.routes.iter().map(|r| r.to_string()).collect())
+                .unwrap_or_default(),
+        });
+    }
+    s.peers.sort_by_key(|p| p.ip);
+    s
+}
+
+/// A user's uid, by name or number
+fn uid_of(user: &str) -> Result<u32> {
+    if let Ok(uid) = user.parse() {
+        return Ok(uid);
+    }
+    let name = std::ffi::CString::new(user)?;
+    // SAFETY: getpwnam returns a pointer into static storage or null
+    let pw = unsafe { libc::getpwnam(name.as_ptr()) };
+    if pw.is_null() {
+        bail!("no such user: {user}");
+    }
+    Ok(unsafe { (*pw).pw_uid })
+}
+
 async fn up(state: &State, opts: UpOpts) -> Result<()> {
     os::inherit_capabilities();
-    let UpOpts { no_tun, dev, offline, bind, iroh_relays, relay_ca, advertise_routes, exit_node, no_dns } = opts;
+    let UpOpts { no_tun, dev, offline, bind, iroh_relays, relay_ca, advertise_routes, exit_node, no_dns, operator, socket } = opts;
+    let operator = operator.as_deref().map(uid_of).transpose()?;
     let node = Node::start(
         state,
         NodeOpts { offline, bind, iroh_relays, relay_ca, advertise_routes: advertise_routes.clone(), hostname: hostname() },
@@ -415,14 +616,26 @@ async fn up(state: &State, opts: UpOpts) -> Result<()> {
     let Node { engine, keys, cfg, id, mut views, .. } = node;
     let view_rx = &mut views;
 
-    let mut tun_ip: Option<Ipv4Addr> = None;
-    let mut os_routes: Option<os::Routes> = None;
-    let mut router = false;
-    let mut exit_routing: Option<os::ExitRouting> = None;
+    // The user's choices (tray, `toolnet connect`, `toolnet exit-node`) win
+    // over the flags once made
+    let prefs_path = state.path("prefs.json");
+    let mut prefs = ipc::Prefs::load(&prefs_path).unwrap_or(ipc::Prefs { connected: true, exit_node });
+    let (status_tx, status_rx) = tokio::sync::watch::channel(ipc::DaemonStatus::default());
+    let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel::<ipc::Command>(8);
+    {
+        let engine = engine.clone();
+        tokio::spawn(async move {
+            if let Err(e) = ipc::serve(socket, operator, engine, status_rx, cmd_tx).await {
+                warn!("no control socket (status and the tray won't work): {e:#}");
+            }
+        });
+    }
+
+    let mut tunnel = Tunnel::default();
     let names = dns::Names::default();
-    let mut dns_registered = false;
     let mut last_status = None;
     let mut report = tokio::time::interval(Duration::from_secs(60));
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     // Losing membership tears everything down, but only once it lasts: during
     // a key rotation the new network can arrive just before our new group key
     let mut teardown_at: Option<tokio::time::Instant> = None;
@@ -435,6 +648,7 @@ async fn up(state: &State, opts: UpOpts) -> Result<()> {
         };
         tokio::select! {
             _ = tokio::signal::ctrl_c() => break,
+            _ = sigterm.recv() => break,
             _ = report.tick() => {
                 for line in engine.status().await {
                     info!("  {line}");
@@ -448,45 +662,90 @@ async fn up(state: &State, opts: UpOpts) -> Result<()> {
                 continue;
             }
             r = view_rx.changed() => r?,
+            Some((req, reply)) = cmd_rx.recv() => {
+                let view = view_rx.borrow().1.clone();
+                let result = match req {
+                    ipc::Request::Status => Ok(()),
+                    ipc::Request::Connect => {
+                        prefs.connected = true;
+                        Ok(())
+                    }
+                    ipc::Request::Disconnect => {
+                        prefs.connected = false;
+                        Ok(())
+                    }
+                    ipc::Request::ExitNode { name: None } => {
+                        prefs.exit_node = None;
+                        Ok(())
+                    }
+                    ipc::Request::ExitNode { name: Some(name) } => {
+                        let usable = view.as_ref().map(|v| exit_nodes(v, &keys.public_key())).unwrap_or_default();
+                        if usable.contains(&name) {
+                            prefs.exit_node = Some(name);
+                            Ok(())
+                        } else {
+                            Err(format!("{name} isn't an exit node (it must offer it and the owner allow it); exit nodes: {usable:?}"))
+                        }
+                    }
+                };
+                if result.is_ok() {
+                    info!(connected = prefs.connected, exit = ?prefs.exit_node, "settings changed");
+                    prefs.save(&prefs_path);
+                }
+                let _ = reply.send(result);
+            }
         }
         let (status, view) = view_rx.borrow_and_update().clone();
         if last_status.as_ref() != Some(&status) {
             log_status(&status, &cfg, &id.owner);
             last_status = Some(status.clone());
         }
+        let publish = |exit_active: bool| {
+            status_tx.send_replace(daemon_status(&cfg, &keys, &status, view.as_ref(), &prefs, exit_active));
+        };
         let (Status::Member, Some(view)) = (&status, &view) else {
             if teardown_at.is_none() {
                 teardown_at = Some(tokio::time::Instant::now() + MEMBERSHIP_GRACE);
             }
+            publish(tunnel.exit.is_some());
             continue;
         };
         teardown_at = None;
+        if !prefs.connected {
+            if tunnel.ip.is_some() || !engine.status().await.is_empty() {
+                info!("disconnected: dropping peers and the tunnel");
+                engine.set_peers(vec![]).await;
+                tunnel.down(&engine, &dev).await;
+            }
+            publish(false);
+            continue;
+        }
         let me = view.config.members.get(&keys.public_key().to_hex());
-        if let (Some(me), false, None) = (me, no_tun, tun_ip) {
+        if let (Some(me), false, None) = (me, no_tun, tunnel.ip) {
             let (_, prefix) = view.config.prefix()?;
             engine.start_tun(&dev, me.ip, prefix).await?;
-            tun_ip = Some(me.ip);
-            os_routes = Some(os::Routes::new(&dev)?);
+            tunnel.ip = Some(me.ip);
+            tunnel.routes = Some(os::Routes::new(&dev)?);
             if !no_dns {
                 let (names, ip) = (names.clone(), me.ip);
-                tokio::spawn(async move {
+                tunnel.dns = Some(tokio::spawn(async move {
                     if let Err(e) = dns::serve(ip, names).await {
                         warn!("MagicDNS: {e:#}");
                     }
-                });
+                }));
                 let (dev, ip, domain) = (dev.clone(), me.ip, view.config.dns_domain());
                 tokio::task::spawn_blocking(move || dns::register_resolved(&dev, ip, &domain));
-                dns_registered = true;
+                tunnel.dns_registered = true;
             }
             if !advertise_routes.is_empty() {
                 let tailnet: engine::Cidr = view.config.ipv4.parse()?;
                 match os::enable_router(&dev, &tailnet) {
-                    Ok(()) => router = true,
+                    Ok(()) => tunnel.router = true,
                     Err(e) => warn!("can't route for the tailnet: {e:#}"),
                 }
             }
         }
-        if let (Some(me), Some(ip)) = (me, tun_ip) {
+        if let (Some(me), Some(ip)) = (me, tunnel.ip) {
             if me.ip != ip {
                 warn!(old = %ip, new = %me.ip, "our tailnet IP changed: restart toolnet to apply");
             }
@@ -494,57 +753,49 @@ async fn up(state: &State, opts: UpOpts) -> Result<()> {
         names
             .set(&view.config.dns_domain(), view.config.members.values().map(|m| (m.name.clone(), m.ip)))
             .await;
-        let peers = peers_of(view, &keys.public_key(), exit_node.as_deref());
+        let exit_node = prefs.exit_node.as_deref();
+        let peers = peers_of(view, &keys.public_key(), exit_node);
         info!(epoch = view.epoch, peers = ?peers.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), "netmap");
         engine.set_peers(peers).await;
-        if tun_ip.is_some() {
-            if let Some(r) = os_routes.as_mut() {
+        if tunnel.ip.is_some() {
+            if let Some(r) = tunnel.routes.as_mut() {
                 r.sync(&engine.routed_prefixes().await);
             }
-            let exit = exit_node.as_deref().and_then(|name| {
+            let exit = exit_node.and_then(|name| {
                 peers_of(view, &keys.public_key(), Some(name))
                     .into_iter()
                     .find(|p| p.name == name && p.routes.iter().any(|r| r.len == 0))
             });
-            match (&exit, exit_routing.is_some()) {
+            match (&exit, tunnel.exit.is_some()) {
                 (Some(peer), false) => match os::ExitRouting::enable(&dev, &engine.udp_ports()) {
                     Ok(r) => {
                         info!(exit = %peer.name, "using exit node");
-                        exit_routing = Some(r);
+                        tunnel.exit = Some(r);
                     }
                     Err(e) => warn!("can't route through the exit node: {e:#}"),
                 },
                 (None, true) => {
-                    if let Some(name) = &exit_node {
-                        warn!(exit = %name, "exit node gone (not allowed, not advertised or offline): traffic goes direct");
+                    match exit_node {
+                        Some(name) => warn!(exit = %name, "exit node gone (not allowed, not advertised or offline): traffic goes direct"),
+                        None => info!("not using an exit node anymore"),
                     }
-                    exit_routing.take().unwrap().disable();
+                    tunnel.exit.take().unwrap().disable();
                 }
                 _ => {}
             }
-            if let Some(routing) = exit_routing.as_mut() {
+            if let Some(routing) = tunnel.exit.as_mut() {
                 // Everything we need to reach peers at all must bypass the tunnel
                 let mut urls: Vec<String> = cfg.relays.clone();
                 urls.extend(view.nodes.values().filter_map(|n| n.relay.clone()));
                 urls.extend(engine.endpoint.addr().relay_urls().map(|r| r.to_string()));
                 routing.set_bypass(resolve_hosts(urls).await);
             }
-        } else if exit_node.is_some() {
-            warn!("--exit-node needs the TUN device (not --no-tun)");
+        } else if exit_node.is_some() && no_tun {
+            warn!("an exit node needs the TUN device (not --no-tun)");
         }
+        publish(tunnel.exit.is_some());
     }
-    if let Some(r) = exit_routing.take() {
-        r.disable();
-    }
-    if let Some(r) = os_routes.take() {
-        r.teardown();
-    }
-    if dns_registered {
-        dns::unregister_resolved(&dev);
-    }
-    if router {
-        os::disable_router();
-    }
+    tunnel.down(&engine, &dev).await;
     engine.endpoint.close().await;
     Ok(())
 }
