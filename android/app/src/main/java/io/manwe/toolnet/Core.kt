@@ -13,6 +13,12 @@ object Core {
     /** Creates the device identity if needed; returns the join code, or "error: ..." */
     external fun setup(dir: String, owner: String, net: String, name: String): String
 
+    /** Forgets owner + network (keeps the identity: approvals stay valid) */
+    external fun forget(dir: String)
+
+    /** "ownerNpub\nnetwork", or "" if not set up */
+    external fun network(dir: String): String
+
     /** The join code for the owner app, or "" if not set up */
     external fun joinCode(dir: String, name: String): String
 

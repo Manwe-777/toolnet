@@ -116,6 +116,10 @@ class MainActivity : Activity() {
         box.addView(label("The owner npub is in the owner app's settings.", 14f, muted))
         val owner = input("Owner npub1…")
         val net = input("Network name (e.g. home)")
+        getSharedPreferences("toolnet", MODE_PRIVATE).let { p ->
+            p.getString("owner", null)?.let { owner.setText(it) }
+            p.getString("net", null)?.let { net.setText(it) }
+        }
         val name = input("This phone's name").apply { setText(ToolnetVpnService.deviceName()) }
         box.addView(owner); box.addView(net); box.addView(name)
         box.addView(button("Set up") {
@@ -123,7 +127,11 @@ class MainActivity : Activity() {
             if (result.startsWith("error:")) {
                 toast(result.removePrefix("error:").trim())
             } else {
-                getSharedPreferences("toolnet", MODE_PRIVATE).edit().putString("name", name.text.toString().trim()).apply()
+                getSharedPreferences("toolnet", MODE_PRIVATE).edit()
+                    .putString("name", name.text.toString().trim())
+                    .putString("owner", owner.text.toString().trim())
+                    .putString("net", net.text.toString().trim())
+                    .apply()
                 render()
             }
         })
@@ -161,6 +169,17 @@ class MainActivity : Activity() {
         })
         join.addView(label(code, 11f, muted, mono = true))
         root.addView(join)
+
+        val netCard = cardView()
+        val (ownerNpub, netName) = Core.network(stateDir()).split("\n").let { (it.getOrNull(0) ?: "") to (it.getOrNull(1) ?: "") }
+        netCard.addView(label("Network", 18f, fg, bold = true))
+        netCard.addView(label("$netName, owner ${ownerNpub.take(20)}…", 14f, muted, mono = true))
+        netCard.addView(button("Change network") {
+            startService(Intent(this, ToolnetVpnService::class.java).setAction(ToolnetVpnService.ACTION_STOP))
+            Core.forget(stateDir())
+            render()
+        })
+        root.addView(netCard)
     }
 
     private fun toggle(on: Boolean) {

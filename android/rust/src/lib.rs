@@ -127,6 +127,26 @@ pub extern "system" fn Java_io_manwe_toolnet_Core_setup<'l>(
     jstr(&mut env, &out)
 }
 
+/// Forgets the owner and network (keeps this device's identity, so an
+/// existing approval stays valid), for setting up again
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_manwe_toolnet_Core_forget<'l>(mut env: JNIEnv<'l>, _: JClass<'l>, dir: JString<'l>) {
+    let dir = string(&mut env, &dir);
+    let _ = std::fs::remove_file(PathBuf::from(dir).join("config.json"));
+}
+
+/// The configured owner npub and network, "npub\nnet", or "" if not set up
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_manwe_toolnet_Core_network<'l>(mut env: JNIEnv<'l>, _: JClass<'l>, dir: JString<'l>) -> jstring {
+    let dir = string(&mut env, &dir);
+    let out = State::new(Some(PathBuf::from(dir)))
+        .ok()
+        .and_then(|s| s.config().ok())
+        .and_then(|c| parse_pubkey(&c.owner).ok().and_then(|o| o.to_bech32().ok()).map(|o| format!("{o}\n{}", c.net)))
+        .unwrap_or_default();
+    jstr(&mut env, &out)
+}
+
 /// This device's join payload if set up, "" if not
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_io_manwe_toolnet_Core_joinCode<'l>(
@@ -239,7 +259,11 @@ async fn run(dir: PathBuf, name: String) -> Result<()> {
         let (status, view) = views.borrow().clone();
         let peers_json = peer_status(&node).await;
         let text = match &status {
-            Status::NoNetwork => format!("waiting for network {} (owner {})", node.cfg.net, short(&node.id.owner.to_hex())),
+            Status::NoNetwork => format!(
+                "no network \"{}\" from owner {}…: check the owner npub and network name",
+                node.cfg.net,
+                node.id.owner.to_bech32().unwrap_or_default().chars().take(16).collect::<String>()
+            ),
             Status::NotMember { .. } => "waiting for approval".into(),
             Status::Member => format!("member of {}", node.cfg.net),
         };
@@ -386,9 +410,6 @@ pub extern "system" fn Java_io_manwe_toolnet_Core_networkChanged<'l>(_env: JNIEn
     }
 }
 
-fn short(s: &str) -> String {
-    s.chars().take(10).collect()
-}
 
 async fn peer_status(node: &Node) -> Vec<serde_json::Value> {
     node.engine
