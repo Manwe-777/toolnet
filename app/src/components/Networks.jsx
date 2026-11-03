@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { createNetwork, listNetworks, DEFAULT_IPV4, NET_NAME } from "../lib/net.js";
 import { SettingsIcon, RefreshIcon } from "./Icons";
+import AndroidApp from "./AndroidApp";
 
 /** The owner's networks, found on the relays: pick one, or create one */
 function Networks({ db, current, onOpen, onSettings }) {
@@ -69,6 +70,7 @@ function Networks({ db, current, onOpen, onSettings }) {
           ) : (
             <button className="btn btn--ghost btn--wide" onClick={() => setCreating(true)}>New network</button>
           )}
+          <AndroidApp />
         </>
       )}
     </main>
