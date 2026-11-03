@@ -92,29 +92,39 @@ pub async fn follow(db: &Db, id: &Identity, tx: watch::Sender<(Status, Option<Vi
     }
 }
 
-/// Publishes our node info whenever it changes (at most every 5 s)
+/// How often unchanged node info is republished, so owners and peers can tell
+/// a device is up (the owner app shows devices heard from in the last 15 min)
+pub const HEARTBEAT: Duration = Duration::from_secs(5 * 60);
+
+/// Publishes our node info whenever it changes (at most every 5 s), and at
+/// least every HEARTBEAT
 pub async fn publish_node(
     db: &Db,
     id: &Identity,
     mut views: watch::Receiver<(Status, Option<View>)>,
     mut infos: watch::Receiver<NodeInfo>,
 ) -> Result<()> {
-    let mut last: Option<(u64, NodeInfo)> = None;
+    let mut last: Option<(u64, NodeInfo, tokio::time::Instant)> = None;
     loop {
         let mut failed = false;
         let mut published = false;
         let (status, view) = views.borrow_and_update().clone();
-        let info = infos.borrow_and_update().clone();
+        let mut info = infos.borrow_and_update().clone();
         if let (Status::Member, Some(view)) = (status, view) {
-            let same = last.as_ref().is_some_and(|(e, i)| {
-                *e == view.epoch && i.addrs == info.addrs && i.relay == info.relay && i.endpoint_id == info.endpoint_id
+            let same = last.as_ref().is_some_and(|(e, i, at)| {
+                *e == view.epoch
+                    && i.addrs == info.addrs
+                    && i.relay == info.relay
+                    && i.endpoint_id == info.endpoint_id
+                    && at.elapsed() < HEARTBEAT
             });
             if !same {
+                info.updated_at = crate::state::now();
                 let value = model::seal(&view.group, view.epoch, &info)?;
                 match db.put(&id.device, &model::node_key(&id.owner, &id.net), &value).await {
                     Ok(_) => {
                         info!(addrs = ?info.addrs, relay = ?info.relay, epoch = view.epoch, "published node info");
-                        last = Some((view.epoch, info));
+                        last = Some((view.epoch, info, tokio::time::Instant::now()));
                         published = true;
                     }
                     Err(e) => {
@@ -140,10 +150,17 @@ pub async fn publish_node(
                 std::future::pending().await
             }
         };
+        let heartbeat = async {
+            match &last {
+                Some((_, _, at)) => tokio::time::sleep_until(*at + HEARTBEAT).await,
+                None => std::future::pending().await,
+            }
+        };
         tokio::select! {
             r = views.changed() => r?,
             r = infos.changed() => r?,
             _ = retry => {}
+            _ = heartbeat => {}
         }
     }
 }

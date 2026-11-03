@@ -76,6 +76,7 @@ Usage details and the exact data format are in [daemon/README.md](daemon/README.
 |---|---|
 | [docs/decisions.md](docs/decisions.md) | Decision log and open questions. **Read this first when resuming.** |
 | [docs/roadmap.md](docs/roadmap.md) | What's done, what's next |
+| [docs/installers.md](docs/installers.md) | Plan: one-line installers for Linux, macOS, Windows |
 | [docs/architecture.md](docs/architecture.md) | Components, peer roles, the hard parts |
 | [docs/data-model.md](docs/data-model.md) | Original data model design (the implemented format is in daemon/README.md) |
 | [docs/flows.md](docs/flows.md) | Join, roaming, removal, exit node, DNS |

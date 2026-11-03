@@ -76,8 +76,9 @@
    owner-signed policy.
 7. **Relay**: a toolnet-owned TLS CA for relays reached by IP (decisions.md),
    and relays listed in the network config.
-8. **Mobile**: Android VpnService / iOS NetworkExtension shells around the Rust
-   core.
+8. **Installers**: `curl | sh` for Linux and macOS, `irm | iex` for Windows,
+   served by the owner app; plan in [installers.md](installers.md). Mobile:
+   iOS NetworkExtension shell around the Rust core.
 9. **Performance**: batch TUN reads, GSO, multiple queues. Today: ~800 Mbit/s
     TCP through the full daemon in namespaces (release build, one core).
 
