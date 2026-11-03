@@ -7,9 +7,11 @@ encrypted tool-db data on public or self-hosted Nostr relays. Packets travel
 peer to peer over [iroh](https://iroh.computer) (QUIC, hole punching, relay
 fallback).
 
-> Status: **working prototype** (Linux). Owner-approved membership, key
-> rotation on removal, TUN data plane, subnet routes, exit nodes and MagicDNS
-> all work and are covered by tests. Not audited; don't rely on it yet.
+> Status: **working prototype**, Linux (systemd service) and Android (VpnService
+> app, installed from the owner app). Owner-approved membership, key rotation
+> on removal, subnet routes, exit nodes, MagicDNS, and hole punching through
+> carrier NAT on both ends (phone on LTE -> homelab direct, ~80-110 ms). The
+> owner app is a PWA with QR / join-code pairing. Not audited.
 
 ```
             control plane: tool-db on Nostr relays (relays only see ciphertext)
@@ -58,6 +60,7 @@ Usage details and the exact data format are in [daemon/README.md](daemon/README.
 
 | Path | What |
 |---|---|
+| [android/](android) | Android app: Kotlin VpnService shell around the Rust core (`android/rust`); `build.sh`, `publish.sh` |
 | [app/](app) | Owner app (PWA): approve devices by QR scan, remove them (key rotation), routes |
 | [daemon/](daemon) | The `toolnet` binary (Rust): tool-db client, crypto, control plane, iroh + TUN engine, DNS |
 | [tests/](tests) | End-to-end tests: local ToolDB relay, JS compatibility, namespaces with real TUN traffic, subnet routes, exit node |
