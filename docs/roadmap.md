@@ -57,10 +57,13 @@
    VpnService, setup + join QR/code, approved from the owner side, tailnet and
    subnet routes. **First test (2026-11-03): phone on LTE (carrier NAT) ->
    homelab direct, ping 76-86 ms, LAN via the subnet route, Navidrome over
-   `10.213.0.2:4533`.** Next: survive network switches and reboots (always-on
-   VPN), MagicDNS (Android VPNs can't do split DNS: answer DNS inside the
-   tunnel), exit node, smaller APK (strip the .so), release signing, and a
-   hold for iroh's first probes without nft.
+   `10.213.0.2:4533`.** Network switches work (measured over adb: names
+   resolve 1-4 s after a switch, direct again over LTE in 9-13 s); MagicDNS
+   works inside the tunnel (100.100.100.100: tailnet names answered, the rest
+   forwarded to the network's DNS, public resolvers as fallback; bare names via
+   the search domain). Tests start the VPN with `am start ... --ez connect true`.
+   Next: always-on VPN / reboot, exit node, smaller APK (strip the .so),
+   release signing, and a hold for iroh's first probes without nft.
 3. **Owner key safety**: NIP-46 remote signer or the PWA, instead of
    `owner.key` on a laptop.
 4. **IPv6** inside the tailnet (ULA per network), and IPv6 exit traffic.

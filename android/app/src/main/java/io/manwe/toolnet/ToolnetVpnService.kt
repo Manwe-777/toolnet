@@ -7,6 +7,9 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.LinkProperties
+import android.net.Network
 import android.net.VpnService
 import android.os.Build
 import android.os.Handler
@@ -23,6 +26,7 @@ class ToolnetVpnService : VpnService() {
     private val handler = Handler(Looper.getMainLooper())
     private var generation = -1
     private var running = false
+    private var netCallback: ConnectivityManager.NetworkCallback? = null
 
     private val poll = object : Runnable {
         override fun run() {
@@ -48,6 +52,7 @@ class ToolnetVpnService : VpnService() {
             running = true
             generation = -1
             handler.post(poll)
+            watchNetwork()
         }
         return START_STICKY
     }
@@ -63,6 +68,13 @@ class ToolnetVpnService : VpnService() {
             .setMtu(1150)
             .addAddress(ip, prefix)
             .addRoute(network(ip, prefix), prefix)
+        // MagicDNS: all DNS goes to the core, which answers tailnet names and
+        // forwards the rest (Android VPNs have no per-domain DNS)
+        val dns = vpn.optString("dns")
+        if (dns.isNotEmpty()) {
+            b.addDnsServer(dns).addRoute(dns, 32)
+            vpn.optString("domain").takeIf { it.isNotEmpty() }?.let { b.addSearchDomain(it) }
+        }
         val routes = vpn.getJSONArray("routes")
         for (i in 0 until routes.length()) {
             val (addr, len) = routes.getString(i).split("/")
@@ -83,7 +95,57 @@ class ToolnetVpnService : VpnService() {
         Log.i(TAG, "VPN $ip/$prefix routes=$routes (generation $gen)")
     }
 
+    /**
+     * Follows the real (non-VPN) network: on any change, tells the core and
+     * hands it the active network's DNS servers. The default network callback
+     * alone isn't reliable here (it didn't fire on Wi-Fi -> LTE with our VPN up).
+     */
+    private fun watchNetwork() {
+        val cm = getSystemService(ConnectivityManager::class.java)
+        var last: Network? = null
+        var lastDns = ""
+        fun refresh(reason: String) {
+            val active = cm.activeNetwork // ours bypasses the VPN: the real one
+            val caps = active?.let { cm.getNetworkCapabilities(it) }
+            if (active == null || caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) == true) return
+            val dns = cm.getLinkProperties(active)?.dnsServers?.joinToString(",") { it.hostAddress ?: "" } ?: ""
+            if (dns != lastDns) {
+                lastDns = dns
+                Core.setUpstreamDns(dns)
+            }
+            if (active != last) {
+                last = active
+                Log.i(TAG, "network: $active ($reason)")
+                setUnderlyingNetworks(arrayOf(active))
+                Core.networkChanged()
+            }
+        }
+        val request = android.net.NetworkRequest.Builder()
+            .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .removeCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+            .build()
+        // Right after a loss there may be no active network yet: look again soon
+        fun soon(reason: String) {
+            for (delay in longArrayOf(0, 1000, 3000)) handler.postDelayed({ refresh(reason) }, delay)
+        }
+        val cb = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) = soon("available")
+            override fun onLost(network: Network) = soon("lost")
+            override fun onLinkPropertiesChanged(network: Network, lp: LinkProperties) = soon("link")
+        }
+        cm.registerNetworkCallback(request, cb)
+        netCallback = cb
+        handler.post { refresh("start") }
+    }
+
     private fun stopAll() {
+        netCallback?.let {
+            try {
+                getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(it)
+            } catch (_: Exception) {
+            }
+        }
+        netCallback = null
         running = false
         handler.removeCallbacks(poll)
         Thread { Core.stop() }.start()

@@ -141,6 +141,9 @@ pub struct Engine {
     state: Arc<RwLock<State>>,
     tun: Arc<RwLock<Option<Arc<AsyncDevice>>>>,
     tun_task: Arc<std::sync::Mutex<Option<JoinHandle<()>>>>,
+    /// UDP to this address:53 from the TUN goes here instead of to peers
+    /// (MagicDNS inside the tunnel, for platforms without split DNS)
+    dns_tap: Arc<std::sync::Mutex<Option<(Ipv4Addr, tokio::sync::mpsc::Sender<Vec<u8>>)>>>,
 }
 
 impl Engine {
@@ -196,6 +199,7 @@ impl Engine {
             state: Default::default(),
             tun: Default::default(),
             tun_task: Default::default(),
+            dns_tap: Default::default(),
         };
         engine.spawn_accept();
         engine.spawn_path_report();
@@ -251,10 +255,26 @@ impl Engine {
         }
     }
 
+    /// Sends DNS queries (UDP to `ip`:53) read from the TUN to `tx`
+    pub fn set_dns_tap(&self, ip: Ipv4Addr, tx: tokio::sync::mpsc::Sender<Vec<u8>>) {
+        *self.dns_tap.lock().unwrap() = Some((ip, tx));
+    }
+
+    /// Writes a packet into the TUN (to the local system)
+    pub async fn write_tun(&self, packet: &[u8]) {
+        let tun = self.tun.read().await.clone();
+        if let Some(tun) = tun {
+            if let Err(e) = tun.send(packet).await {
+                debug!("tun write: {e}");
+            }
+        }
+    }
+
     async fn run_tun(&self, dev: tun_rs::AsyncDevice) {
         let dev = Arc::new(dev);
         *self.tun.write().await = Some(dev.clone());
         let state = self.state.clone();
+        let dns_tap = self.dns_tap.clone();
         let task = tokio::spawn(async move {
             let mut buf = vec![0u8; 65536];
             loop {
@@ -267,6 +287,13 @@ impl Engine {
                     continue; // IPv4 only for now
                 }
                 let dst = Ipv4Addr::new(packet[16], packet[17], packet[18], packet[19]);
+                let tap = dns_tap.lock().unwrap().clone();
+                if let Some((ip, tx)) = tap {
+                    if dst == ip && packet[9] == 17 {
+                        let _ = tx.try_send(packet.to_vec());
+                        continue;
+                    }
+                }
                 let state = state.read().await;
                 let Some(conn) = state.route(dst) else {
                     continue;

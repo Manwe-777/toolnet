@@ -64,6 +64,20 @@ class MainActivity : Activity() {
         })
         if (Build.VERSION.SDK_INT >= 33) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         render()
+        handleConnectExtra(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleConnectExtra(intent)
+    }
+
+    /** `am start ... --ez connect true|false`: connect without touching the
+     * screen (testing over adb; the VPN consent must have been given once) */
+    private fun handleConnectExtra(intent: Intent?) {
+        if (intent?.hasExtra("connect") == true && Core.joinCode(stateDir(), name()).isNotEmpty()) {
+            toggle(intent.getBooleanExtra("connect", false))
+        }
     }
 
     override fun onResume() {

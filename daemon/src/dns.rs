@@ -42,6 +42,71 @@ impl Names {
         debug!(%name, qtype, rcode, "dns query");
         Some(build_response(query, end, rcode, ip))
     }
+
+    /// Answers a query for our zone; None for any other name (to forward it)
+    pub async fn resolve(&self, query: &[u8]) -> Option<Vec<u8>> {
+        let (name, _, _) = parse_question(query)?;
+        let in_zone = {
+            let (domain, _) = &*self.0.read().await;
+            !domain.is_empty() && (name == *domain || name.ends_with(&format!(".{domain}")))
+        };
+        if in_zone { self.answer(query).await } else { None }
+    }
+}
+
+/// An IPv4/UDP packet's addresses, ports and payload
+pub fn parse_udp(packet: &[u8]) -> Option<(Ipv4Addr, u16, Ipv4Addr, u16, &[u8])> {
+    if packet.len() < 28 || packet[0] >> 4 != 4 || packet[9] != 17 {
+        return None;
+    }
+    let ihl = (packet[0] & 0x0f) as usize * 4;
+    let udp = packet.get(ihl..)?;
+    let len = u16::from_be_bytes([*udp.get(4)?, *udp.get(5)?]) as usize;
+    let src = Ipv4Addr::new(packet[12], packet[13], packet[14], packet[15]);
+    let dst = Ipv4Addr::new(packet[16], packet[17], packet[18], packet[19]);
+    let sport = u16::from_be_bytes([udp[0], udp[1]]);
+    let dport = u16::from_be_bytes([udp[2], udp[3]]);
+    Some((src, sport, dst, dport, udp.get(8..len.max(8))?))
+}
+
+/// An IPv4/UDP packet (with checksums), for answering inside a tunnel
+pub fn udp_packet(src: Ipv4Addr, sport: u16, dst: Ipv4Addr, dport: u16, payload: &[u8]) -> Vec<u8> {
+    let udp_len = 8 + payload.len();
+    let total = 20 + udp_len;
+    let mut p = Vec::with_capacity(total);
+    p.extend_from_slice(&[0x45, 0, (total >> 8) as u8, total as u8, 0, 0, 0x40, 0, 64, 17, 0, 0]);
+    p.extend_from_slice(&src.octets());
+    p.extend_from_slice(&dst.octets());
+    let ip_sum = checksum(&p[..20], 0);
+    p[10..12].copy_from_slice(&ip_sum.to_be_bytes());
+    p.extend_from_slice(&sport.to_be_bytes());
+    p.extend_from_slice(&dport.to_be_bytes());
+    p.extend_from_slice(&(udp_len as u16).to_be_bytes());
+    p.extend_from_slice(&[0, 0]);
+    p.extend_from_slice(payload);
+    // UDP checksum over the pseudo header
+    let mut pseudo = 0u32;
+    for w in src.octets().chunks(2).chain(dst.octets().chunks(2)) {
+        pseudo += u16::from_be_bytes([w[0], w[1]]) as u32;
+    }
+    pseudo += 17 + udp_len as u32;
+    let mut sum = checksum(&p[20..], pseudo);
+    if sum == 0 {
+        sum = 0xffff;
+    }
+    p[26..28].copy_from_slice(&sum.to_be_bytes());
+    p
+}
+
+fn checksum(data: &[u8], initial: u32) -> u16 {
+    let mut sum = initial;
+    for w in data.chunks(2) {
+        sum += u16::from_be_bytes([w[0], *w.get(1).unwrap_or(&0)]) as u32;
+    }
+    while sum >> 16 != 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    !(sum as u16)
 }
 
 /// (name, qtype, end of the question section)
@@ -126,6 +191,22 @@ mod tests {
         q.extend_from_slice(&qtype.to_be_bytes());
         q.extend_from_slice(&[0, 1]);
         q
+    }
+
+    #[test]
+    fn udp_packets_roundtrip() {
+        let (a, b) = (Ipv4Addr::new(10, 213, 0, 3), Ipv4Addr::new(100, 100, 100, 100));
+        let p = udp_packet(a, 40000, b, 53, b"hello");
+        assert_eq!(parse_udp(&p), Some((a, 40000, b, 53, &b"hello"[..])));
+        assert_eq!(checksum(&p[..20], 0), 0, "valid IP header checksum");
+    }
+
+    #[tokio::test]
+    async fn resolves_only_our_zone() {
+        let names = Names::default();
+        names.set("home.toolnet", [("server".to_string(), Ipv4Addr::new(10, 213, 0, 2))]).await;
+        assert!(names.resolve(&query("server.home.toolnet", 1)).await.is_some());
+        assert!(names.resolve(&query("example.com", 1)).await.is_none());
     }
 
     #[tokio::test]

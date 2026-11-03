@@ -24,6 +24,15 @@ use toolnet::{
 };
 use tracing::{info, warn};
 
+/// MagicDNS inside the tunnel: the VPN's DNS server. Android VPNs can't do
+/// split DNS, so every query comes here: tailnet names are answered, the rest
+/// forwarded to the underlying network's DNS servers
+const DNS_IP: std::net::Ipv4Addr = std::net::Ipv4Addr::new(100, 100, 100, 100);
+/// When Kotlin hasn't told us the underlying network's DNS servers
+const FALLBACK_DNS: &[&str] = &["1.1.1.1", "8.8.8.8"];
+
+static UPSTREAM_DNS: Mutex<Vec<std::net::IpAddr>> = Mutex::new(Vec::new());
+
 /// What the core wants the VPN to look like; the app rebuilds the VPN when
 /// `generation` changes
 #[derive(Clone, Default, PartialEq)]
@@ -33,6 +42,8 @@ struct VpnWanted {
     prefix: u8,
     /// Extra prefixes to route into the VPN (approved subnet routes)
     routes: Vec<String>,
+    /// MagicDNS search domain
+    domain: String,
 }
 
 #[derive(Default)]
@@ -60,7 +71,8 @@ fn logs() {
             use tracing_subscriber::prelude::*;
             let filter = tracing_subscriber::filter::Targets::new()
                 .with_default(tracing::Level::INFO)
-                .with_target("toolnet", tracing::Level::DEBUG);
+                .with_target("toolnet", tracing::Level::DEBUG)
+                .with_target("toolnet_android", tracing::Level::DEBUG);
             let _ = tracing_subscriber::registry().with(paranoid_android::layer("toolnet")).with(filter).try_init();
         }
     });
@@ -189,6 +201,12 @@ async fn run(dir: PathBuf, name: String) -> Result<()> {
     }
     let me = node.me();
     let mut views = node.views.clone();
+    let names = toolnet::dns::Names::default();
+    {
+        let (tx, rx) = tokio::sync::mpsc::channel(256);
+        node.engine.set_dns_tap(DNS_IP, tx);
+        tokio::spawn(serve_dns(node.engine.clone(), names.clone(), rx));
+    }
     let mut generation = 0u64;
     let mut wanted: Option<VpnWanted> = None;
     let mut teardown_at: Option<tokio::time::Instant> = None;
@@ -230,13 +248,14 @@ async fn run(dir: PathBuf, name: String) -> Result<()> {
             continue;
         };
         teardown_at = None;
+        names.set(&view.config.dns_domain(), view.config.members.values().map(|m| (m.name.clone(), m.ip))).await;
         let peers = peers_of(view, &me, None);
         node.engine.set_peers(peers).await;
         let Some(m) = view.config.members.get(&me.to_hex()) else { continue };
         let (_, prefix) = view.config.prefix()?;
         let routes: Vec<String> = node.engine.routed_prefixes().await.iter().filter(|c| c.len > 0).map(|c| c.to_string()).collect();
-        let next = VpnWanted { generation, ip: m.ip.to_string(), prefix, routes };
-        let changed = wanted.as_ref().is_none_or(|w| (w.ip.as_str(), w.prefix, &w.routes) != (next.ip.as_str(), next.prefix, &next.routes));
+        let next = VpnWanted { generation, ip: m.ip.to_string(), prefix, routes, domain: view.config.dns_domain() };
+        let changed = wanted.as_ref().is_none_or(|w| (w.ip.as_str(), w.prefix, &w.routes, &w.domain) != (next.ip.as_str(), next.prefix, &next.routes, &next.domain));
         if changed {
             generation += 1;
             let next = VpnWanted { generation, ..next };
@@ -247,6 +266,88 @@ async fn run(dir: PathBuf, name: String) -> Result<()> {
                 s.member = true;
             });
         }
+    }
+}
+
+/// Answers DNS queries read from the TUN: our zone locally, the rest through
+/// the underlying network's DNS servers (our sockets bypass the VPN)
+async fn serve_dns(engine: toolnet::engine::Engine, names: toolnet::dns::Names, mut rx: tokio::sync::mpsc::Receiver<Vec<u8>>) {
+    use toolnet::dns::{parse_udp, udp_packet};
+    while let Some(packet) = rx.recv().await {
+        let Some((src, sport, dst, 53, query)) = parse_udp(&packet) else {
+            tracing::debug!(len = packet.len(), "dns tap: not a UDP/53 packet");
+            continue;
+        };
+        let query = query.to_vec();
+        let (engine, names) = (engine.clone(), names.clone());
+        tokio::spawn(async move {
+            let answer = match names.resolve(&query).await {
+                Some(a) => Some(a),
+                None => forward_dns(&query).await,
+            };
+            if let Some(answer) = answer {
+                engine.write_tun(&udp_packet(dst, 53, src, sport, &answer)).await;
+            }
+        });
+    }
+}
+
+async fn forward_dns(query: &[u8]) -> Option<Vec<u8>> {
+    // The network's own servers first; public ones after, for the moments
+    // around a network switch when the list is stale or unreachable
+    let mut servers = UPSTREAM_DNS.lock().unwrap().clone();
+    for f in FALLBACK_DNS.iter().filter_map(|s| s.parse().ok()) {
+        if !servers.contains(&f) {
+            servers.push(f);
+        }
+    }
+    for server in servers {
+        let bind = if server.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" };
+        let sock = match tokio::net::UdpSocket::bind(bind).await {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(%server, "dns forward bind: {e}");
+                continue;
+            }
+        };
+        if let Err(e) = sock.send_to(query, (server, 53)).await {
+            warn!(%server, "dns forward send: {e}");
+            continue;
+        }
+        let mut buf = vec![0u8; 4096];
+        match tokio::time::timeout(Duration::from_millis(1500), sock.recv_from(&mut buf)).await {
+            Ok(Ok((n, _))) => {
+                buf.truncate(n);
+                tracing::debug!(%server, n, "dns forwarded");
+                return Some(buf);
+            }
+            Ok(Err(e)) => warn!(%server, "dns forward recv: {e}"),
+            Err(_) => warn!(%server, "dns forward: no answer in 1.5 s"),
+        }
+    }
+    None
+}
+
+/// The underlying network's DNS servers, comma separated (from Kotlin)
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_manwe_toolnet_Core_setUpstreamDns<'l>(mut env: JNIEnv<'l>, _: JClass<'l>, servers: JString<'l>) {
+    let servers = string(&mut env, &servers);
+    let list: Vec<std::net::IpAddr> = servers.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+    info!(?list, "upstream DNS");
+    *UPSTREAM_DNS.lock().unwrap() = list;
+}
+
+/// The default network changed (from Kotlin's NetworkCallback): tell iroh now
+/// instead of waiting for it to notice
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_manwe_toolnet_Core_networkChanged<'l>(_env: JNIEnv<'l>, _: JClass<'l>) {
+    let running = RUNNING.lock().unwrap();
+    if let Some(Running { runtime, engine: Some(engine) }) = running.as_ref() {
+        let engine = engine.clone();
+        runtime.spawn(async move {
+            info!("network changed (Android)");
+            engine.endpoint.network_change().await;
+        });
     }
 }
 
@@ -307,6 +408,7 @@ pub extern "system" fn Java_io_manwe_toolnet_Core_status<'l>(mut env: JNIEnv<'l>
             "error": s.and_then(|s| s.error.clone()),
             "vpn": s.and_then(|s| s.vpn.clone()).map(|v| serde_json::json!({
                 "generation": v.generation, "ip": v.ip, "prefix": v.prefix, "routes": v.routes,
+                "dns": DNS_IP.to_string(), "domain": v.domain,
             })),
             "peers": s.map(|s| s.peers.clone()).unwrap_or_default(),
         })

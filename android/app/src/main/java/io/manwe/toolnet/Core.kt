@@ -29,4 +29,10 @@ object Core {
     external fun status(): String
 
     external fun stop()
+
+    /** The underlying network's DNS servers, comma separated (for forwarding) */
+    external fun setUpstreamDns(servers: String)
+
+    /** The default network changed: makes iroh rebind and re-punch now */
+    external fun networkChanged()
 }
