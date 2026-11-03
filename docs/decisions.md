@@ -43,9 +43,7 @@ Log decisions here with a date. Update when resuming work.
 4. ~~Tailscale control protocol stability~~: dropped together with path B.
 5. ~~Is QUIC instead of WireGuard acceptable?~~ Built on iroh (QUIC); revisit
    only if WireGuard interop becomes a requirement.
-9. **The homelab `toolnet-relay` container** (plain HTTP on :3340, LAN only,
-   unused since port forwards are off the table): remove it, or keep it for
-   LAN-only use? Its homelab repo files are uncommitted.
+9. ~~Homelab `toolnet-relay` container: keep or remove?~~ Removed (2026-11-03): hole punching works, n0's relays cover the fallback. `relay/` stays for anyone who needs one.
 6. **Relays:** public relays only, or a ToolDbRelay per tailnet (durability,
    fewer metadata leaks, and it could host `derper` alongside)?
 7. **Multiple tailnets / sharing a node** with another owner (Tailscale's
