@@ -138,6 +138,7 @@ pub struct Engine {
     hold: Arc<std::sync::Mutex<Option<crate::punch::Hold>>>,
     state: Arc<RwLock<State>>,
     tun: Arc<RwLock<Option<Arc<AsyncDevice>>>>,
+    tun_task: Arc<std::sync::Mutex<Option<JoinHandle<()>>>>,
 }
 
 impl Engine {
@@ -192,6 +193,7 @@ impl Engine {
             hold: Arc::new(std::sync::Mutex::new(hold)),
             state: Default::default(),
             tun: Default::default(),
+            tun_task: Default::default(),
         };
         engine.spawn_accept();
         engine.spawn_path_report();
@@ -218,11 +220,37 @@ impl Engine {
             .mtu(TUN_MTU)
             .build_async()
             .with_context(|| format!("creating TUN {name} (needs CAP_NET_ADMIN)"))?;
+        info!("tun {name} up: {ip}/{prefix}, mtu {TUN_MTU}");
+        self.run_tun(dev).await;
+        Ok(())
+    }
+
+    /// Uses a TUN device someone else created and configured (Android's
+    /// VpnService), taking ownership of the file descriptor
+    ///
+    /// # Safety
+    /// `fd` must be an open TUN file descriptor that nothing else will close.
+    pub async unsafe fn start_tun_fd(&self, fd: std::os::fd::RawFd) -> Result<()> {
+        // SAFETY: the caller hands us an open TUN fd it gives up
+        let dev = unsafe { tun_rs::AsyncDevice::from_fd(fd) }.context("using the TUN file descriptor")?;
+        info!(fd, "tun from file descriptor up");
+        self.run_tun(dev).await;
+        Ok(())
+    }
+
+    /// Stops reading the TUN (the device closes when the last reader drops it)
+    pub async fn stop_tun(&self) {
+        self.tun.write().await.take();
+        if let Some(task) = self.tun_task.lock().unwrap().take() {
+            task.abort();
+        }
+    }
+
+    async fn run_tun(&self, dev: tun_rs::AsyncDevice) {
         let dev = Arc::new(dev);
         *self.tun.write().await = Some(dev.clone());
-        info!("tun {name} up: {ip}/{prefix}, mtu {TUN_MTU}");
         let state = self.state.clone();
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             let mut buf = vec![0u8; 65536];
             loop {
                 let n = match dev.recv(&mut buf).await {
@@ -243,7 +271,7 @@ impl Engine {
                 }
             }
         });
-        Ok(())
+        *self.tun_task.lock().unwrap() = Some(task);
     }
 
     /// Applies the peer set from the control plane: starts dialing new peers,

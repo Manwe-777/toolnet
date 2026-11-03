@@ -1,0 +1,22 @@
+[package]
+name = "toolnet-android"
+version = "0.1.0"
+edition = "2024"
+description = "toolnet's core for the Android app, over JNI"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+anyhow = "1"
+jni = "0.21"
+qrcode = { version = "0.14", default-features = false }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+toolnet = { path = "../../daemon" }
+tracing = "0.1"
+nostr-sdk = "0.45.4"
+
+[target.'cfg(target_os = "android")'.dependencies]
+paranoid-android = "0.2"
+tracing-subscriber = "0.3"
