@@ -1,12 +1,12 @@
 //! Host network configuration (Linux, through `ip`, `nft` and /proc).
 //! Needs CAP_NET_ADMIN, like the TUN device itself.
 
-use std::{collections::BTreeSet, process::Command};
+use std::collections::BTreeSet;
 
 use anyhow::{Context, Result, bail};
 use tracing::{info, warn};
 
-use crate::engine::Cidr;
+use crate::{command, engine::Cidr, run};
 
 /// With file capabilities (`setcap`), the helpers we run (`ip`, `nft`,
 /// `resolvectl`) wouldn't get our network capabilities: make them ambient so
@@ -23,42 +23,8 @@ pub fn inherit_capabilities() {
     }
 }
 
-/// A system command by name, also looked up in the sbin directories that
-/// Debian and others leave off a user's PATH (nft lives there)
-pub fn command(cmd: &str) -> Command {
-    let path = std::env::var("PATH").unwrap_or_default();
-    let found = path
-        .split(':')
-        .chain(["/usr/sbin", "/sbin", "/usr/bin", "/bin"])
-        .map(|d| std::path::Path::new(d).join(cmd))
-        .find(|p| p.is_file());
-    Command::new(found.as_deref().unwrap_or(std::path::Path::new(cmd)))
-}
 
-/// Runs an nft script (from stdin)
-pub fn nft(script: &str) -> Result<()> {
-    let mut child = command("nft")
-        .args(["-f", "-"])
-        .stdin(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .context("running nft")?;
-    use std::io::Write;
-    child.stdin.take().unwrap().write_all(script.as_bytes())?;
-    let out = child.wait_with_output()?;
-    if !out.status.success() {
-        bail!("nft: {}", String::from_utf8_lossy(&out.stderr).trim());
-    }
-    Ok(())
-}
 
-fn run(cmd: &str, args: &[&str]) -> Result<()> {
-    let out = command(cmd).args(args).output().with_context(|| format!("running {cmd}"))?;
-    if !out.status.success() {
-        bail!("{cmd} {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim());
-    }
-    Ok(())
-}
 
 /// toolnet's routing table: subnet routes from peers, plus the default route
 /// while an exit node is in use. It is consulted after the main table (minus

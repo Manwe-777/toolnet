@@ -257,8 +257,8 @@ const HOLD_TABLE: &str = "toolnet_punch";
 impl Hold {
     pub fn new(iroh_ports: &[u16]) -> anyhow::Result<Self> {
         let ports = iroh_ports.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ");
-        let _ = crate::os::nft(&format!("delete table inet {HOLD_TABLE}"));
-        crate::os::nft(&format!(
+        let _ = crate::nft(&format!("delete table inet {HOLD_TABLE}"));
+        crate::nft(&format!(
             "table inet {HOLD_TABLE} {{
                 set ports {{ type inet_service; elements = {{ {ports} }} }}
                 set hold {{ type ipv4_addr . inet_service; }}
@@ -274,19 +274,19 @@ impl Hold {
 
     pub fn hold(&mut self, a: SocketAddrV4) {
         if self.held.insert(a) {
-            let _ = crate::os::nft(&format!("add element inet {HOLD_TABLE} hold {{ {} . {} }}", a.ip(), a.port()));
+            let _ = crate::nft(&format!("add element inet {HOLD_TABLE} hold {{ {} . {} }}", a.ip(), a.port()));
         }
     }
 
     pub fn release(&mut self, a: SocketAddrV4) {
         if self.held.remove(&a) {
-            let _ = crate::os::nft(&format!("delete element inet {HOLD_TABLE} hold {{ {} . {} }}", a.ip(), a.port()));
+            let _ = crate::nft(&format!("delete element inet {HOLD_TABLE} hold {{ {} . {} }}", a.ip(), a.port()));
         }
     }
 }
 
 impl Drop for Hold {
     fn drop(&mut self) {
-        let _ = crate::os::nft(&format!("delete table inet {HOLD_TABLE}"));
+        let _ = crate::nft(&format!("delete table inet {HOLD_TABLE}"));
     }
 }

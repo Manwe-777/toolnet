@@ -99,7 +99,7 @@ pub async fn serve(ip: Ipv4Addr, names: Names) -> Result<()> {
 pub fn register_resolved(dev: &str, ip: Ipv4Addr, domain: &str) {
     // Never wait for an interactive polkit prompt: with CAP_NET_ADMIN (or as
     // root) resolved allows the change without one
-    let run = |args: &[&str]| crate::os::command("resolvectl").arg("--no-ask-password").args(args).output();
+    let run = |args: &[&str]| crate::command("resolvectl").arg("--no-ask-password").args(args).output();
     let ok = |o: std::io::Result<std::process::Output>| o.map(|o| o.status.success()).unwrap_or(false);
     if ok(run(&["dns", dev, &ip.to_string()])) && ok(run(&["domain", dev, &format!("~{domain}")])) {
         info!("systemd-resolved: *.{domain} -> {ip}");
@@ -109,7 +109,7 @@ pub fn register_resolved(dev: &str, ip: Ipv4Addr, domain: &str) {
 }
 
 pub fn unregister_resolved(dev: &str) {
-    let _ = crate::os::command("resolvectl").args(["--no-ask-password", "revert", dev]).output();
+    let _ = crate::command("resolvectl").args(["--no-ask-password", "revert", dev]).output();
 }
 
 #[cfg(test)]

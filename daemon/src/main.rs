@@ -1,45 +1,28 @@
 //! toolnet: a Tailscale-style VPN whose control plane is tool-db on Nostr.
 //! See ../docs. Data plane: iroh (QUIC, hole punching, relays) + TUN.
 
-mod control;
-mod crypto;
-mod dns;
-mod engine;
-mod model;
-mod os;
-mod punch;
-mod tooldb;
-
 use std::{
     collections::BTreeMap,
     net::{Ipv4Addr, SocketAddr},
-    path::{Path, PathBuf},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    path::PathBuf,
+    time::Duration,
 };
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use nostr_sdk::prelude::{FromBech32, Keys, PublicKey, SecretKey, ToBech32};
-use serde::{Deserialize, Serialize};
-use tokio::sync::watch;
+use nostr_sdk::prelude::{Keys, PublicKey, SecretKey, ToBech32};
 use tracing::{info, warn};
 
-use crate::{
-    control::Identity,
-    engine::{Engine, EngineConfig, Peer},
-    model::{Member, NetConfig, NodeInfo, Status, View},
+use toolnet::{
+    crypto, dns, engine,
+    model::{self, Member, NetConfig, Status, View},
+    node::{MEMBERSHIP_GRACE, Node, NodeOpts, log_status, peers_of},
+    os,
+    state::{Config, State, hostname, join_payload, now, parse_pubkey, relays_or_default},
     tooldb::Db,
 };
 
-/// How long a lost membership must last before we drop our peers
-const MEMBERSHIP_GRACE: Duration = Duration::from_secs(15);
 
-const DEFAULT_RELAYS: &[&str] = &[
-    "wss://relay.damus.io",
-    "wss://nos.lol",
-    "wss://relay.primal.net",
-    "wss://nostr.mom",
-];
 
 #[derive(Parser)]
 #[command(version, about = "Tailscale-style VPN with its control plane on tool-db / Nostr")]
@@ -148,116 +131,13 @@ enum OwnerCmd {
     List,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
-struct Config {
-    owner: String,
-    net: String,
-    relays: Vec<String>,
-}
 
-/// What a device's QR code carries: `toolnet:join?device=<npub>&name=<name>`
-fn join_payload(npub: &str, name: &str) -> String {
-    let name: String = name
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || "-._".contains(c) { c.to_string() } else { format!("%{:02X}", c as u32 & 0xff) })
-        .collect();
-    format!("toolnet:join?device={npub}&name={name}")
-}
 
-pub fn now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
-}
 
-fn parse_pubkey(s: &str) -> Result<PublicKey> {
-    PublicKey::from_bech32(s)
-        .or_else(|_| PublicKey::from_hex(s))
-        .with_context(|| format!("not an npub or hex public key: {s}"))
-}
 
-struct State {
-    dir: PathBuf,
-}
 
-impl State {
-    fn new(dir: Option<PathBuf>) -> Result<Self> {
-        let dir = match dir {
-            Some(d) => d,
-            None => dirs::data_local_dir().context("no data dir")?.join("toolnet"),
-        };
-        std::fs::create_dir_all(&dir)?;
-        Ok(Self { dir })
-    }
 
-    fn path(&self, name: &str) -> PathBuf {
-        self.dir.join(name)
-    }
 
-    fn read_secret(&self, name: &str) -> Result<Option<String>> {
-        match std::fs::read_to_string(self.path(name)) {
-            Ok(s) => Ok(Some(s.trim().to_string())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    fn write_secret(&self, name: &str, hex: &str) -> Result<()> {
-        write_private(&self.path(name), hex)
-    }
-
-    fn device_keys(&self) -> Result<Keys> {
-        let hex = self.read_secret("device.key")?.context("no device key: run `toolnet init` first")?;
-        Ok(Keys::new(SecretKey::from_hex(&hex)?))
-    }
-
-    fn owner_keys(&self) -> Result<Keys> {
-        let hex = self.read_secret("owner.key")?.context("no owner key on this machine: `toolnet owner create`")?;
-        Ok(Keys::new(SecretKey::from_hex(&hex)?))
-    }
-
-    fn endpoint_key(&self) -> Result<iroh::SecretKey> {
-        if let Some(hex) = self.read_secret("endpoint.key")? {
-            let bytes: [u8; 32] = data_encoding::HEXLOWER
-                .decode(hex.as_bytes())?
-                .try_into()
-                .map_err(|_| anyhow::anyhow!("endpoint.key must be 32 bytes"))?;
-            return Ok(iroh::SecretKey::from_bytes(&bytes));
-        }
-        let key = iroh::SecretKey::generate();
-        self.write_secret("endpoint.key", &data_encoding::HEXLOWER.encode(&key.to_bytes()))?;
-        Ok(key)
-    }
-
-    fn config(&self) -> Result<Config> {
-        let s = std::fs::read_to_string(self.path("config.json")).context("no config: run `toolnet init` first")?;
-        Ok(serde_json::from_str(&s)?)
-    }
-
-    fn save_config(&self, c: &Config) -> Result<()> {
-        std::fs::write(self.path("config.json"), serde_json::to_string_pretty(c)?)?;
-        Ok(())
-    }
-}
-
-fn write_private(path: &Path, contents: &str) -> Result<()> {
-    use std::io::Write;
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-    opts.open(path)?.write_all(contents.as_bytes())?;
-    Ok(())
-}
-
-fn relays_or_default(relays: Vec<String>) -> Vec<String> {
-    if relays.is_empty() {
-        DEFAULT_RELAYS.iter().map(|s| s.to_string()).collect()
-    } else {
-        relays
-    }
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -489,43 +369,7 @@ async fn status(state: &State) -> Result<()> {
     Ok(())
 }
 
-fn hostname() -> String {
-    std::fs::read_to_string("/etc/hostname")
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|_| "unknown".into())
-}
 
-/// Peers for the engine: members other than us, with valid node info. A
-/// default route is only kept for the exit node we chose
-fn peers_of(view: &View, me: &PublicKey, exit_node: Option<&str>) -> Vec<Peer> {
-    let mut peers = vec![];
-    for (key, member) in &view.config.members {
-        let Ok(pk) = PublicKey::from_hex(key) else { continue };
-        if pk == *me {
-            continue;
-        }
-        let Some(node) = view.nodes.get(&pk) else { continue };
-        let Ok(endpoint) = engine::parse_endpoint_id(&node.endpoint_id) else { continue };
-        // Routed only if the owner allows it AND the device offers it
-        let allowed: Vec<engine::Cidr> = member.routes.iter().filter_map(|r| r.parse().ok()).collect();
-        let routes = node
-            .routes
-            .iter()
-            .filter_map(|r| r.parse::<engine::Cidr>().ok())
-            .filter(|r| allowed.contains(r))
-            .filter(|r| r.len > 0 || exit_node == Some(member.name.as_str()))
-            .collect();
-        peers.push(Peer {
-            name: member.name.clone(),
-            ip: member.ip,
-            endpoint,
-            addrs: node.addrs.iter().filter_map(|a| a.parse().ok()).collect(),
-            relay: node.relay.as_deref().and_then(|r| r.parse().ok()),
-            routes,
-        });
-    }
-    peers
-}
 
 struct UpOpts {
     no_tun: bool,
@@ -563,86 +407,13 @@ async fn resolve_hosts(urls: impl IntoIterator<Item = String>) -> std::collectio
 async fn up(state: &State, opts: UpOpts) -> Result<()> {
     os::inherit_capabilities();
     let UpOpts { no_tun, dev, offline, bind, iroh_relays, relay_ca, advertise_routes, exit_node, no_dns } = opts;
-    let (keys, cfg) = (state.device_keys()?, state.config()?);
-    let id = Identity { device: keys.clone(), owner: parse_pubkey(&cfg.owner)?, net: cfg.net.clone() };
-    let engine = Engine::start(EngineConfig {
-        secret: state.endpoint_key()?,
-        offline,
-        relays: iroh_relays,
-        bind,
-        relay_ca,
-    })
+    let node = Node::start(
+        state,
+        NodeOpts { offline, bind, iroh_relays, relay_ca, advertise_routes: advertise_routes.clone(), hostname: hostname() },
+    )
     .await?;
-    info!(device = %keys.public_key().to_bech32()?, endpoint = %engine.id(), "toolnet up");
-    if !offline {
-        engine.spawn_punch_assist();
-    }
-    let db = std::sync::Arc::new(Db::connect(&cfg.relays).await?);
-
-    // Our node info, kept current from the endpoint's addresses
-    let endpoint_id = engine.id().to_string();
-    let advertised: Vec<String> = advertise_routes.iter().map(|r| r.to_string()).collect();
-    let make_info = move |addr: &iroh::EndpointAddr| NodeInfo {
-        routes: advertised.clone(),
-        endpoint_id: endpoint_id.clone(),
-        addrs: control::useful_addrs(addr.ip_addrs().copied()).iter().map(|a| a.to_string()).collect(),
-        relay: addr.relay_urls().next().map(|r| r.to_string()),
-        hostname: hostname(),
-        version: env!("CARGO_PKG_VERSION").into(),
-        updated_at: now(),
-    };
-    let (info_tx, info_rx) = watch::channel(make_info(&engine.endpoint.addr()));
-    {
-        let (engine, db) = (engine.clone(), db.clone());
-        tokio::spawn(async move {
-            use n0_watcher::Watcher;
-            let mut w = engine.endpoint.watch_addr();
-            let local = |a: &iroh::EndpointAddr| -> std::collections::BTreeSet<std::net::IpAddr> {
-                // Only real interfaces: our own TUN (and Docker, Tailscale...)
-                // coming and going is not a network switch
-                let public = control::useful_addrs(a.ip_addrs().copied()).iter().map(|s| s.ip()).collect::<std::collections::BTreeSet<_>>();
-                if_addrs::get_if_addrs().unwrap_or_default().into_iter().map(|i| i.ip()).filter(|ip| public.contains(ip)).collect()
-            };
-            let mut last_local = local(&engine.endpoint.addr());
-            while let Ok(addr) = w.updated().await {
-                // Our own interface addresses changed: a network switch. The
-                // Nostr websockets on the old network are dead: reconnect now
-                let now_local = local(&addr);
-                if now_local != last_local {
-                    info!(from = ?last_local, to = ?now_local, "network changed");
-                    last_local = now_local;
-                    let db = db.clone();
-                    tokio::spawn(async move { db.reconnect().await });
-                }
-                let info = make_info(&addr);
-                info_tx.send_if_modified(|cur| {
-                    let changed = cur.addrs != info.addrs || cur.relay != info.relay;
-                    if changed {
-                        *cur = info;
-                    }
-                    changed
-                });
-            }
-        });
-    }
-
-    let (view_tx, mut view_rx) = watch::channel((Status::NoNetwork, None::<View>));
-    {
-        let (db, id, view_tx) = (db.clone(), id.clone(), view_tx);
-        tokio::spawn(async move {
-            if let Err(e) = control::follow(&db, &id, view_tx).await {
-                warn!("control plane stopped: {e:#}");
-            }
-        });
-    }
-    {
-        let (db, id, views) = (db.clone(), id.clone(), view_rx.clone());
-        tokio::spawn(async move {
-            if let Err(e) = control::publish_node(&db, &id, views, info_rx).await {
-                warn!("node info publisher stopped: {e:#}");
-            }
-        });
-    }
+    let Node { engine, keys, cfg, id, mut views, .. } = node;
+    let view_rx = &mut views;
 
     let mut tun_ip: Option<Ipv4Addr> = None;
     let mut os_routes: Option<os::Routes> = None;
@@ -680,11 +451,7 @@ async fn up(state: &State, opts: UpOpts) -> Result<()> {
         }
         let (status, view) = view_rx.borrow_and_update().clone();
         if last_status.as_ref() != Some(&status) {
-            match &status {
-                Status::NoNetwork => info!("waiting for network {} of owner {}", cfg.net, id.owner.to_bech32()?),
-                Status::NotMember { epoch } => warn!(epoch, "not a member: waiting for approval (or removed)"),
-                Status::Member => info!("member of network {}", cfg.net),
-            }
+            log_status(&status, &cfg, &id.owner);
             last_status = Some(status.clone());
         }
         let (Status::Member, Some(view)) = (&status, &view) else {

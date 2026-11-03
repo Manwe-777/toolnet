@@ -3,6 +3,13 @@ name = "toolnet"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "toolnet"
+path = "src/main.rs"
+
 [dependencies]
 anyhow = "1.0.104"
 bytes = "1.12.1"
