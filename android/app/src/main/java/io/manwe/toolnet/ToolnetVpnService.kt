@@ -47,6 +47,7 @@ class ToolnetVpnService : VpnService() {
         }
         startForegroundCompat()
         if (!running) {
+            Core.setExitNode(getSharedPreferences("toolnet", MODE_PRIVATE).getString("exit", "") ?: "")
             val err = Core.start(stateDir(this), deviceName())
             if (err.isNotEmpty()) Log.w(TAG, "start: $err")
             running = true

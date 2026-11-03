@@ -1,3 +1,10 @@
 [workspace]
 resolver = "2"
 members = ["spike", "daemon", "android/rust"]
+
+# The Android core: small (it ships inside the APK), no debug symbols
+[profile.android]
+inherits = "release"
+strip = true
+lto = "thin"
+codegen-units = 1

@@ -62,8 +62,11 @@
    works inside the tunnel (100.100.100.100: tailnet names answered, the rest
    forwarded to the network's DNS, public resolvers as fallback; bare names via
    the search domain). Tests start the VPN with `am start ... --ez connect true`.
-   Next: always-on VPN / reboot, exit node, smaller APK (strip the .so),
-   release signing, and a hold for iroh's first probes without nft.
+   Exit node works (choose it in the app; on LTE, 1.1.1.1 unreachable direct
+   but answers through the homelab). APK 59 -> 16 MB (stripped core, no
+   stray .so files). DNS isn't sent through the exit node yet (forwarded from
+   the phone's own network). Next: always-on VPN / reboot check, release
+   signing, and a hold for iroh's first probes without nft.
 3. **Owner key safety**: NIP-46 remote signer or the PWA, instead of
    `owner.key` on a laptop.
 4. **IPv6** inside the tailnet (ULA per network), and IPv6 exit traffic.

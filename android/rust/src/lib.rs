@@ -32,6 +32,8 @@ const DNS_IP: std::net::Ipv4Addr = std::net::Ipv4Addr::new(100, 100, 100, 100);
 const FALLBACK_DNS: &[&str] = &["1.1.1.1", "8.8.8.8"];
 
 static UPSTREAM_DNS: Mutex<Vec<std::net::IpAddr>> = Mutex::new(Vec::new());
+/// The exit node chosen in the app (member name), if any
+static EXIT: Mutex<Option<String>> = Mutex::new(None);
 
 /// What the core wants the VPN to look like; the app rebuilds the VPN when
 /// `generation` changes
@@ -53,6 +55,10 @@ struct Shared {
     vpn: Option<VpnWanted>,
     peers: Vec<serde_json::Value>,
     error: Option<String>,
+    /// Members that may be used as exit nodes (allowed by the owner, offered)
+    exit_nodes: Vec<String>,
+    /// The exit node in use (chosen and available)
+    exit: Option<String>,
 }
 
 struct Running {
@@ -249,11 +255,32 @@ async fn run(dir: PathBuf, name: String) -> Result<()> {
         };
         teardown_at = None;
         names.set(&view.config.dns_domain(), view.config.members.values().map(|m| (m.name.clone(), m.ip))).await;
-        let peers = peers_of(view, &me, None);
+        let exit_nodes: Vec<String> = view
+            .config
+            .members
+            .iter()
+            .filter(|(k, m)| {
+                **k != me.to_hex()
+                    && m.routes.iter().any(|r| r == "0.0.0.0/0")
+                    && nostr_sdk::prelude::PublicKey::from_hex(k)
+                        .ok()
+                        .and_then(|pk| view.nodes.get(&pk))
+                        .is_some_and(|n| n.routes.iter().any(|r| r == "0.0.0.0/0"))
+            })
+            .map(|(_, m)| m.name.clone())
+            .collect();
+        let exit = EXIT.lock().unwrap().clone().filter(|e| exit_nodes.contains(e));
+        set_shared(|s| {
+            s.exit_nodes = exit_nodes.clone();
+            s.exit = exit.clone();
+        });
+        let peers = peers_of(view, &me, exit.as_deref());
         node.engine.set_peers(peers).await;
         let Some(m) = view.config.members.get(&me.to_hex()) else { continue };
         let (_, prefix) = view.config.prefix()?;
-        let routes: Vec<String> = node.engine.routed_prefixes().await.iter().filter(|c| c.len > 0).map(|c| c.to_string()).collect();
+        // Subnet routes, and 0.0.0.0/0 while using an exit node (our own
+        // sockets bypass the VPN, so iroh and Nostr never loop through it)
+        let routes: Vec<String> = node.engine.routed_prefixes().await.iter().map(|c| c.to_string()).collect();
         let next = VpnWanted { generation, ip: m.ip.to_string(), prefix, routes, domain: view.config.dns_domain() };
         let changed = wanted.as_ref().is_none_or(|w| (w.ip.as_str(), w.prefix, &w.routes, &w.domain) != (next.ip.as_str(), next.prefix, &next.routes, &next.domain));
         if changed {
@@ -326,6 +353,14 @@ async fn forward_dns(query: &[u8]) -> Option<Vec<u8>> {
         }
     }
     None
+}
+
+/// Uses this member as exit node ("" for none)
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_manwe_toolnet_Core_setExitNode<'l>(mut env: JNIEnv<'l>, _: JClass<'l>, name: JString<'l>) {
+    let name = string(&mut env, &name);
+    info!(exit = %name, "exit node chosen");
+    *EXIT.lock().unwrap() = Some(name).filter(|n| !n.is_empty());
 }
 
 /// The underlying network's DNS servers, comma separated (from Kotlin)
@@ -411,6 +446,8 @@ pub extern "system" fn Java_io_manwe_toolnet_Core_status<'l>(mut env: JNIEnv<'l>
                 "dns": DNS_IP.to_string(), "domain": v.domain,
             })),
             "peers": s.map(|s| s.peers.clone()).unwrap_or_default(),
+            "exit_nodes": s.map(|s| s.exit_nodes.clone()).unwrap_or_default(),
+            "exit": s.and_then(|s| s.exit.clone()),
         })
     };
     jstr(&mut env, &json.to_string())

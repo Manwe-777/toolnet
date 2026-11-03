@@ -35,4 +35,7 @@ object Core {
 
     /** The default network changed: makes iroh rebind and re-punch now */
     external fun networkChanged()
+
+    /** Uses this member as exit node ("" for none) */
+    external fun setExitNode(name: String)
 }

@@ -37,6 +37,8 @@ class MainActivity : Activity() {
     private var statusText: TextView? = null
     private var peersText: TextView? = null
     private var connect: Switch? = null
+    private var exitBox: LinearLayout? = null
+    private var exitShown = ""
     private var updating = false
 
     private val dark = Color.parseColor("#0d1117")
@@ -72,9 +74,15 @@ class MainActivity : Activity() {
         handleConnectExtra(intent)
     }
 
-    /** `am start ... --ez connect true|false`: connect without touching the
-     * screen (testing over adb; the VPN consent must have been given once) */
+    /** `am start ... --ez connect true|false [--es exit <member>|none]`: connect
+     * (and pick the exit node) without touching the screen, for testing over
+     * adb; the VPN consent must have been given once */
     private fun handleConnectExtra(intent: Intent?) {
+        intent?.getStringExtra("exit")?.let { it.takeUnless { it == "none" } ?: "" }?.let { name ->
+            getSharedPreferences("toolnet", MODE_PRIVATE).edit().putString("exit", name).apply()
+            Core.setExitNode(name)
+            exitShown = ""
+        }
         if (intent?.hasExtra("connect") == true && Core.joinCode(stateDir(), name()).isNotEmpty()) {
             toggle(intent.getBooleanExtra("connect", false))
         }
@@ -95,7 +103,7 @@ class MainActivity : Activity() {
 
     private fun render() {
         root.removeAllViews()
-        statusText = null; peersText = null; connect = null
+        statusText = null; peersText = null; connect = null; exitBox = null; exitShown = ""
         root.addView(label("toolnet", 26f, fg, bold = true))
         root.addView(label("Your private network, over tool-db and iroh", 14f, muted).also { it.setPadding(0, 0, 0, dp(16)) })
         val code = Core.joinCode(stateDir(), name())
@@ -136,6 +144,7 @@ class MainActivity : Activity() {
         status.addView(row)
         statusText = label("", 14f, muted).also { status.addView(it) }
         peersText = label("", 14f, fg, mono = true).also { status.addView(it) }
+        exitBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }.also { status.addView(it) }
         root.addView(status)
 
         val join = cardView()
@@ -201,6 +210,31 @@ class MainActivity : Activity() {
             out.append("${p.optString("name")}  ${p.optString("ip")}  $kind$rtt\n")
         }
         peersText?.text = out.toString().trimEnd()
+        showExitNodes(s)
+    }
+
+    /** One button per possible exit node; the chosen one shows as in use */
+    private fun showExitNodes(s: JSONObject) {
+        val box = exitBox ?: return
+        val nodes = s.optJSONArray("exit_nodes") ?: return
+        val chosen = getSharedPreferences("toolnet", MODE_PRIVATE).getString("exit", "") ?: ""
+        val inUse = s.optString("exit").takeIf { it != "null" } ?: ""
+        val key = (0 until nodes.length()).joinToString(",") { nodes.getString(it) } + "|$chosen|$inUse"
+        if (key == exitShown) return
+        exitShown = key
+        box.removeAllViews()
+        if (nodes.length() == 0) return
+        box.addView(label(if (inUse.isNotEmpty()) "All traffic goes through $inUse" else "Exit node: none (only the network goes through toolnet)", 14f, muted))
+        for (i in 0 until nodes.length()) {
+            val name = nodes.getString(i)
+            val on = name == chosen
+            box.addView(button(if (on) "Stop using $name as exit node" else "Use $name as exit node") {
+                val next = if (on) "" else name
+                getSharedPreferences("toolnet", MODE_PRIVATE).edit().putString("exit", next).apply()
+                Core.setExitNode(next)
+                exitShown = ""
+            })
+        }
     }
 
     private fun qrBitmap(code: String): Bitmap {
