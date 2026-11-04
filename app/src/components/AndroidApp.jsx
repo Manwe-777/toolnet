@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 
 /**
- * The Android app, published next to this app (android/publish.sh writes
- * download/toolnet.apk and download/version.json). Shows nothing when there
- * isn't one.
+ * The Android app, served next to this app as download/toolnet.apk and
+ * download/version.json (the Pages deploy copies them from the newest
+ * release). Shows nothing when there isn't one.
  */
 function AndroidApp() {
   const [info, setInfo] = useState(null);

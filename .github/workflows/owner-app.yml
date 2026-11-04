@@ -7,7 +7,7 @@ on:
   push:
     branches: [main]
     paths: ["app/**", ".github/workflows/owner-app.yml"]
-  # android/publish.sh runs it after a new APK release
+  # packaging/release.sh runs it after publishing a release
   workflow_dispatch:
 
 permissions:
@@ -37,13 +37,14 @@ jobs:
           cache-dependency-path: app/package-lock.json
       - run: npm ci
       - run: npm run build
-      # The newest Android release, served next to the app (its download card)
+      # The APK of the newest release that has one, served next to the app (its
+      # download card). Releases carry Linux and Android at the same version
       - name: Android APK
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag=$(gh release list -R "$GITHUB_REPOSITORY" --limit 50 --json tagName,publishedAt \
-                  --jq '[.[] | select(.tagName | startswith("android-v"))] | sort_by(.publishedAt) | last | .tagName // empty')
+          tag=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=30" \
+                  --jq '[.[] | select((.draft or .prerelease | not) and any(.assets[]; .name == "toolnet.apk"))] | first | .tag_name // empty')
           if [ -n "$tag" ]; then
             gh release download "$tag" -R "$GITHUB_REPOSITORY" -D dist/download -p toolnet.apk -p version.json
             echo "Android $tag"

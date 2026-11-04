@@ -154,8 +154,8 @@ cargo build --release -p toolnet -p toolnet-tray
 sudo target/release/toolnet install --owner npub1… --net home   # installs the tray too
 
 packaging/build-linux.sh        # static musl binaries for x86_64 + aarch64 (Docker)
-packaging/release.sh 0.3.0      # build and publish a GitHub release
-android/publish.sh 0.1.2        # build, sign and publish the Android app
+android/build.sh --release      # the signed Android app (needs the NDK and keystore.properties)
+packaging/release.sh 0.4.0      # build both and publish a GitHub release (Linux + Android, same version)
 ```
 
 The owner app: `cd app && npm install && npm run dev`. It deploys to GitHub
