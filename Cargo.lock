@@ -4141,7 +4141,7 @@ dependencies = [
 
 [[package]]
 name = "toolnet"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -4200,7 +4200,7 @@ dependencies = [
 
 [[package]]
 name = "toolnet-tray"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "ksni",
