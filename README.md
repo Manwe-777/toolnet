@@ -53,13 +53,21 @@ $B owner routes homelab 0.0.0.0/0              # owner allows it
 $B up --exit-node homelab                      # on the laptop
 ```
 
-To run as a service, with the tray icon on a desktop:
+To run as a service, with the tray icon on a desktop (the owner app's "Add
+device" screen shows this command with the npub and network filled in):
 
 ```bash
+curl -fsSL https://github.com/Manwe-777/toolnet/releases/latest/download/install.sh \
+  | sh -s -- --owner npub1<owner> --net home
+
+# or from a checkout (installs toolnet-tray too if it's built next to it)
 cargo build --release -p toolnet -p toolnet-tray
-sudo packaging/install.sh target/release/toolnet   # also installs toolnet-tray if built
-systemctl --user enable --now toolnet-tray         # once, as your user
+sudo target/release/toolnet install --owner npub1<owner> --net home
 ```
+
+It installs the systemd service (and the tray, on a desktop), creates the
+device identity in `/var/lib/toolnet` and prints the QR code to approve it.
+Run it again to update; `sudo toolnet uninstall` removes it.
 Usage details and the exact data format are in [daemon/README.md](daemon/README.md).
 
 ## Repo
@@ -74,7 +82,7 @@ Usage details and the exact data format are in [daemon/README.md](daemon/README.
 | [spike/](spike) | The first connectivity spike and its field results (LAN, LTE, relays) |
 | [tools/](tools) | `natcheck.py` (NAT mapping probe), `punchtest.py` (raw UDP hole-punch test) |
 | [relay/](relay) | Self-hostable iroh relay (Docker), for a machine reachable from the internet |
-| [packaging/](packaging) | systemd units (daemon, tray) and `install.sh` |
+| [packaging/](packaging) | systemd units (daemon, tray), the `curl \| sh` installer, static builds and releases |
 | [docs/](docs) | Design: architecture, data model, flows, decisions, roadmap |
 
 ## Docs

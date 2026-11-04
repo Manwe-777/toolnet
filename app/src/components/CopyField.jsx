@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-function CopyField({ value, label }) {
+function CopyField({ value, label, wrap }) {
   const [copied, setCopied] = useState(false);
 
   const copy = async () => {
@@ -10,7 +10,7 @@ function CopyField({ value, label }) {
   };
 
   return (
-    <div className="copy-field">
+    <div className={wrap ? "copy-field copy-field--wrap" : "copy-field"}>
       {label && <span className="copy-field__label">{label}</span>}
       <code className="copy-field__value">{value}</code>
       <button type="button" className="btn btn--small" onClick={copy}>

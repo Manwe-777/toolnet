@@ -22,7 +22,7 @@ use toolnet::{
     tooldb::Db,
 };
 
-
+mod install;
 
 #[derive(Parser)]
 #[command(version, about = "Tailscale-style VPN with its control plane on tool-db / Nostr")]
@@ -73,6 +73,46 @@ enum Cmd {
     Disconnect,
     /// Send internet traffic through this member, or `none`
     ExitNode { name: String },
+    /// Install (or update) toolnet as a systemd service on this machine; run as root
+    Install {
+        /// The network owner's npub. Required on a first install
+        #[arg(long)]
+        owner: Option<String>,
+        /// The network's name (default: home, or what's already configured)
+        #[arg(long)]
+        net: Option<String>,
+        /// Nostr relays (repeatable). Default: a few public relays
+        #[arg(long = "relay")]
+        relays: Vec<String>,
+        /// Copy an existing identity (config.json, device.key, endpoint.key)
+        /// from a state directory made with `toolnet init`
+        #[arg(long)]
+        state_from: Option<PathBuf>,
+        /// Flags for `toolnet up`, e.g. "--advertise-exit-node" (kept when omitted)
+        #[arg(long, allow_hyphen_values = true)]
+        args: Option<String>,
+        /// The user who may connect, disconnect and pick the exit node (default: the one running sudo)
+        #[arg(long)]
+        operator: Option<String>,
+        /// RUST_LOG filter for the service, e.g. "info,toolnet=debug"
+        #[arg(long)]
+        log: Option<String>,
+        /// Don't install the tray icon even if toolnet-tray is next to this binary
+        #[arg(long)]
+        no_tray: bool,
+        /// Don't install missing iproute2 / nftables
+        #[arg(long)]
+        no_deps: bool,
+        /// Set everything up but don't (re)start the service
+        #[arg(long)]
+        no_start: bool,
+    },
+    /// Remove the service and binaries (keeps the identity unless --purge); run as root
+    Uninstall {
+        /// Also delete this device's identity (/var/lib/toolnet)
+        #[arg(long)]
+        purge: bool,
+    },
     /// Run: follow the network, publish our addresses, connect to peers
     Up {
         /// Don't create a TUN device; only connect and ping peers (no privileges needed)
@@ -165,28 +205,18 @@ async fn main() -> Result<()> {
         )
         .init();
     let cli = Cli::parse();
+    match cli.cmd {
+        Cmd::Install { owner, net, relays, state_from, args, operator, log, no_tray, no_deps, no_start } => {
+            return install::install(install::Opts { owner, net, relays, state_from, args, operator, log, no_tray, no_deps, no_start });
+        }
+        Cmd::Uninstall { purge } => return install::uninstall(purge),
+        _ => {}
+    }
     let state = State::new(cli.state)?;
     match cli.cmd {
+        Cmd::Install { .. } | Cmd::Uninstall { .. } => unreachable!(),
         Cmd::Init { owner, net, relays } => init(&state, owner, net, relays),
-        Cmd::Id { qr } => {
-            let keys = state.device_keys()?;
-            let npub = keys.public_key().to_bech32()?;
-            println!("device:   {npub}");
-            println!("hex:      {}", keys.public_key().to_hex());
-            println!("endpoint: {}", state.endpoint_key()?.public());
-            if qr {
-                let payload = join_payload(&npub, &hostname());
-                let code = qrcode::QrCode::new(payload.as_bytes())?;
-                let art = code
-                    .render::<qrcode::render::unicode::Dense1x2>()
-                    .dark_color(qrcode::render::unicode::Dense1x2::Light)
-                    .light_color(qrcode::render::unicode::Dense1x2::Dark)
-                    .quiet_zone(true)
-                    .build();
-                println!("\nScan with the toolnet owner app to approve this device:\n{art}\n{payload}");
-            }
-            Ok(())
-        }
+        Cmd::Id { qr } => print_id(&state, qr),
         Cmd::Owner { cmd } => owner(&state, cmd).await,
         Cmd::Status { json } => match ipc::request(&cli.socket, &ipc::Request::Status).await {
             Ok(ipc::Response { status: Some(s), .. }) if json => {
@@ -218,6 +248,26 @@ async fn main() -> Result<()> {
             up(&state, UpOpts { no_tun, dev, offline, bind, iroh_relays, relay_ca, advertise_routes, exit_node, no_dns, operator, socket }).await
         }
     }
+}
+
+fn print_id(state: &State, qr: bool) -> Result<()> {
+    let keys = state.device_keys()?;
+    let npub = keys.public_key().to_bech32()?;
+    println!("device:   {npub}");
+    println!("hex:      {}", keys.public_key().to_hex());
+    println!("endpoint: {}", state.endpoint_key()?.public());
+    if qr {
+        let payload = join_payload(&npub, &hostname());
+        let code = qrcode::QrCode::new(payload.as_bytes())?;
+        let art = code
+            .render::<qrcode::render::unicode::Dense1x2>()
+            .dark_color(qrcode::render::unicode::Dense1x2::Light)
+            .light_color(qrcode::render::unicode::Dense1x2::Dark)
+            .quiet_zone(true)
+            .build();
+        println!("\nScan with the toolnet owner app to approve this device:\n{art}\n{payload}");
+    }
+    Ok(())
 }
 
 fn init(state: &State, owner: Option<String>, net: String, relays: Vec<String>) -> Result<()> {

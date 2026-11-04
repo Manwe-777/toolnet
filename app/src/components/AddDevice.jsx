@@ -1,9 +1,23 @@
 import { useState } from "react";
-import { npubEncode } from "tool-db";
+import { getPublicKey, npubEncode } from "tool-db";
 import { parseJoin, nextFreeIp, dnsName } from "../lib/parse.js";
-import { approveDevice } from "../lib/net.js";
+import { approveDevice, DEFAULT_RELAYS } from "../lib/net.js";
+import { getRelays, getSecretKey } from "../lib/session.js";
 import Scanner from "./Scanner";
+import CopyField from "./CopyField";
 import { keyInputProps } from "./Setup";
+
+/** Where the Linux installer comes from (a GitHub release) */
+const INSTALL_URL = "https://github.com/Manwe-777/toolnet/releases/latest/download/install.sh";
+
+/** The one-liner that installs toolnet on a Linux box and joins this network */
+export function linuxInstallCommand(net) {
+  const owner = npubEncode(getPublicKey(getSecretKey()));
+  const relays = getRelays();
+  const custom = relays.join() !== DEFAULT_RELAYS.join();
+  const flags = [`--owner ${owner}`, `--net ${net}`, ...(custom ? relays.map((r) => `--relay ${r}`) : [])];
+  return `curl -fsSL ${INSTALL_URL} | sh -s -- ${flags.join(" ")}`;
+}
 
 /**
  * Approve a device: scan `toolnet id --qr` (or paste), confirm, approve
@@ -47,10 +61,19 @@ function AddDevice({ db, net, view, onDone, onCancel }) {
       </header>
 
       <section className="card">
+        <h2>Linux</h2>
         <p className="muted small">
-          On the device, run <code>toolnet init --owner &lt;your npub&gt; --net {net}</code>, then{" "}
-          <code>toolnet id --qr</code> and scan the code.
+          Run this on the device. It installs toolnet as a service, joins <b>{net}</b> and shows a
+          QR code to scan below.
         </p>
+        <CopyField value={linuxInstallCommand(net)} wrap />
+        <p className="muted small">
+          Already installed? Run <code>toolnet id --qr</code> instead.
+        </p>
+      </section>
+
+      <section className="card">
+        <h2>Scan the device's code</h2>
         {scanning ? (
           <Scanner onResult={accept} />
         ) : (

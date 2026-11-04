@@ -1,10 +1,27 @@
-# Installers (plan, not built yet)
+# Installers
 
 Goal: one command installs toolnet on a Linux or macOS box and pairs it with
 a network, with no package repository and no app store. Windows gets the same
-shape through PowerShell. Downloads are served by the owner app, like the
-Android APK (`toolnet.manuh.app/download/`), because the repo is private and
-GitHub Releases can't serve public downloads.
+shape through PowerShell.
+
+**Linux is built** (2026-11-04); macOS and Windows below are still plans.
+Downloads are GitHub Release assets (`releases/latest/download/...`): there's
+no website, and the owner app runs on the homelab. They become public when
+the repo does; until then, test with `TOOLNET_DOWNLOAD=<dir>`.
+
+| Piece | Where |
+|---|---|
+| `toolnet install` / `uninstall` | `daemon/src/install.rs` (units embedded from `packaging/`) |
+| static musl builds, x86_64 + aarch64 | `packaging/build-linux.sh` (Docker, cargo-zigbuild) |
+| the `curl \| sh` script | `packaging/install.sh` |
+| GitHub release (binaries, `SHA256SUMS`, `install.sh`) | `packaging/release.sh VERSION` |
+| the copyable command | owner app, "Add a device" |
+| distro tests (Debian, Fedora, Arch, with systemd) | `tests/installer.sh` |
+
+Checksums only catch broken downloads: the script, the binaries and
+`SHA256SUMS` all come from the same release, so a signature (minisign, key
+embedded in the script) only adds something once the script is served from
+somewhere else.
 
 ## Principle: a thin script, a smart binary
 
@@ -17,7 +34,8 @@ piping it into a shell.
 ## The one-liner
 
 ```bash
-curl -fsSL https://toolnet.manuh.app/install.sh | sh -s -- --owner npub1... --net test1
+curl -fsSL https://github.com/Manwe-777/toolnet/releases/latest/download/install.sh \
+  | sh -s -- --owner npub1... --net test1
 ```
 
 The owner app's "Add device" screen shows this command with the owner npub and
@@ -27,40 +45,38 @@ line.
 `install.sh`:
 
 1. Detect `uname -s` (linux, darwin) and `uname -m` (x86_64, aarch64).
-2. Download `toolnet-<os>-<arch>` plus a signed checksum from
-   `/download/`. The signing public key is embedded in the script, so a
-   tampered binary on the server is rejected, not only a corrupted download.
-   minisign or a plain ed25519 signature is enough.
-3. Run `sudo toolnet install --owner … --net …`.
+2. Download `toolnet-linux-<arch>` (and `toolnet-tray-linux-<arch>` when
+   there's a desktop) and check them against `SHA256SUMS`.
+3. Run `sudo toolnet install --owner … --net …` with the same arguments.
 
-`toolnet install` (new subcommand, absorbs `packaging/install.sh`):
+`toolnet install`:
 
-- copy itself to `/usr/local/bin/toolnet`
+- install iproute2 and nftables if missing (apt, dnf, pacman, zypper, apk);
+  warn when systemd-resolved isn't running (no MagicDNS names locally)
+- copy itself, and `toolnet-tray` if it sits next to it, to `/usr/local/bin`
 - write the service definition (embedded in the binary) and drop-ins
-  (`args.conf`, `log.conf`)
-- create the state directory (`/var/lib/toolnet`, 0700) and run `init`
-- enable and start the service
-- print the join QR in the terminal (`toolnet id --qr`); the owner scans it
-  in the owner app and the device joins, the same flow as the phone
+  (`args.conf`, `operator.conf` = the sudo user, `log.conf`)
+- create the state directory (`/var/lib/toolnet`, 0700) and run `init`, or
+  copy an identity with `--state-from`
+- enable and start the service; the tray unit is enabled `--global` (every
+  user's graphical session) and started for the sudo user
+- print the join QR in the terminal (`toolnet id --qr`) on a new identity;
+  the owner scans it in the owner app and the device joins, the same flow as
+  the phone
 
-Updates: re-run the same command. Later, `toolnet update` checks a
-`version.json` (like the Android download card) and replaces the binary.
+Updates: re-run the same command (`--owner` can be left out; the identity
+and the `up` flags are kept). Later, `toolnet update` could compare its
+version with the latest release and do the same.
 
 ## Linux
 
-Mostly packaging.
-
-- **One binary for every distro**: the only crypto dependency is `ring` (no
-  OpenSSL), so static musl builds for `x86_64` and `aarch64` should work.
-  `publish.sh` builds both (cargo-zigbuild or cross) and uploads them next to
-  the APK.
+- **One binary for every distro**: no OpenSSL (`ring` only), so the static
+  musl builds run anywhere.
 - **System tools**: the daemon calls `ip`, `nft`, `iptables` and `resolvectl`.
-  The script checks for them and installs what's missing (apt, dnf, pacman,
-  apk), or warns. Longer term, netlink directly (rtnetlink crate) would remove
-  the `ip` and `nft` dependencies.
-- **No systemd** (Alpine, Void): fall back to an OpenRC or runit service, or
-  print how to run it by hand. Only if such a box actually shows up.
-- **Test**: a clean container or VM per distro (Debian, Fedora, Arch).
+  Longer term, netlink directly (rtnetlink crate) would remove the `ip` and
+  `nft` dependencies.
+- **No systemd** (Alpine, Void): `toolnet install` refuses and prints how to
+  run it by hand. An OpenRC or runit service only if such a box shows up.
 
 ## macOS
 
@@ -84,7 +100,7 @@ macOS daemon works this way).
 No MSI needed to start:
 
 ```powershell
-irm https://toolnet.manuh.app/install.ps1 | iex
+irm https://github.com/Manwe-777/toolnet/releases/latest/download/install.ps1 | iex
 ```
 
 It downloads `toolnet.exe` and `wintun.dll` (WireGuard's signed TUN driver,
@@ -107,9 +123,7 @@ also when a code-signing certificate becomes worth paying for.
 
 ## Order
 
-1. **Linux end to end**: `toolnet install`, musl builds in `publish.sh`,
-   `install.sh` + signed checksums served by the owner app, the copyable
-   command in "Add device". About an afternoon, tested in containers.
+1. ~~**Linux end to end**~~ (done; public once the repo is).
 2. **macOS**, once there's a Mac to test on. Moderate without the exit node;
    more with it.
 3. **Windows** last.

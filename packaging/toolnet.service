@@ -1,14 +1,12 @@
-# toolnet as a system service. Install or update with packaging/install.sh:
+# toolnet as a system service. Installed (and updated) by `toolnet install`,
+# which embeds this file:
 #
-#   sudo packaging/install.sh target/release/toolnet --state-from <dir> \
-#        --args "--exit-node homelab"
+#   sudo toolnet install --owner npub1... --net home --args "--exit-node homelab"
 #
 # Flags for `toolnet up` live in a drop-in (toolnet.service.d/args.conf), the
 # user allowed to connect / disconnect / pick the exit node (the tray) in
-# operator.conf;
-# more logging: `sudo systemctl edit toolnet` and add
-#   [Service]
-#   Environment=RUST_LOG=info,toolnet=debug
+# operator.conf, more logging in log.conf (`toolnet install --log
+# info,toolnet=debug`).
 #
 # Runs as root, but with every capability dropped except network admin
 # (TUN, routes, nft, sysctl) and binding port 53 (MagicDNS). Root is what

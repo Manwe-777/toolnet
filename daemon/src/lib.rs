@@ -28,13 +28,17 @@ pub use state::now;
 /// A system command by name, also looked up in the sbin directories that
 /// Debian and others leave off a user's PATH (nft lives there)
 pub fn command(cmd: &str) -> Command {
+    let found = find_command(cmd);
+    Command::new(found.as_deref().unwrap_or(std::path::Path::new(cmd)))
+}
+
+/// Where a system command lives: PATH, then the sbin directories
+pub fn find_command(cmd: &str) -> Option<std::path::PathBuf> {
     let path = std::env::var("PATH").unwrap_or_default();
-    let found = path
-        .split(':')
+    path.split(':')
         .chain(["/usr/sbin", "/sbin", "/usr/bin", "/bin"])
         .map(|d| std::path::Path::new(d).join(cmd))
-        .find(|p| p.is_file());
-    Command::new(found.as_deref().unwrap_or(std::path::Path::new(cmd)))
+        .find(|p| p.is_file())
 }
 
 /// Runs an nft script (from stdin)
