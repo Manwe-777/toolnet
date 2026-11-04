@@ -5,9 +5,9 @@ a network, with no package repository and no app store. Windows gets the same
 shape through PowerShell.
 
 **Linux is built** (2026-11-04); macOS and Windows below are still plans.
-Downloads are GitHub Release assets (`releases/latest/download/...`): there's
-no website, and the owner app runs on the homelab. They become public when
-the repo does; until then, test with `TOOLNET_DOWNLOAD=<dir>`.
+Downloads are GitHub Release assets (`releases/latest/download/...`), and the
+owner app is on GitHub Pages (https://manwe-777.github.io/toolnet/): no
+website of our own. Test the installer offline with `TOOLNET_DOWNLOAD=<dir>`.
 
 | Piece | Where |
 |---|---|

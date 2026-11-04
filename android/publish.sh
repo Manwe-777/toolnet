@@ -1,18 +1,26 @@
 #!/usr/bin/env bash
-# Builds the signed release APK and publishes it next to the owner app on
-# the homelab (the toolnet-app container serves it at /download/toolnet.apk).
-#   android/publish.sh [VERSION]      e.g. 0.2.0 (default: the build's)
-#   TOOLNET_PUBLISH=user@host:/dir    where to copy (default: the homelab)
+# Builds the signed release APK and publishes it as a GitHub release
+# (android-vVERSION, not marked latest: that's the Linux one-liner's). The
+# owner app's Pages deploy picks up the newest one and serves it at
+# ./download/toolnet.apk, with ./download/version.json.
+#   android/publish.sh VERSION            e.g. 0.1.2
+#   SKIP_BUILD=1 android/publish.sh 0.1.1 reuse dist/toolnet.apk
+#   TOOLNET_PUBLISH=user@host:/dir        also copy there (a self-hosted owner app)
 set -euo pipefail
 cd "$(dirname "$0")"
-VERSION=${1:-0.1.0}
-DEST=${TOOLNET_PUBLISH:-server.local:/home/manuel/appdata/toolnet-app/download}
-./build.sh --release -PappVersion="$VERSION" >/dev/null
+VERSION=${1:?usage: publish.sh VERSION}
+[ -n "${SKIP_BUILD:-}" ] || ./build.sh --release -PappVersion="$VERSION" >/dev/null
 APK=dist/toolnet.apk
 SHA=$(sha256sum "$APK" | cut -d' ' -f1)
 SIZE=$(stat -c %s "$APK")
 printf '{"version":"%s","size":%s,"sha256":"%s","published":"%s"}\n' "$VERSION" "$SIZE" "$SHA" "$(date -u +%FT%TZ)" > dist/version.json
-host=${DEST%%:*} dir=${DEST#*:}
-ssh "$host" "mkdir -p '$dir'"
-scp -q "$APK" dist/version.json "$DEST/"
-echo "published toolnet $VERSION ($SIZE bytes, sha256 $SHA) to $DEST"
+gh release create "android-v$VERSION" --latest=false --title "toolnet Android $VERSION" \
+  --notes "Install from the owner app (https://manwe-777.github.io/toolnet/), or download toolnet.apk. sha256 $SHA" \
+  "$APK" dist/version.json
+gh workflow run owner-app.yml --ref main   # redeploy the owner app with it
+if [ -n "${TOOLNET_PUBLISH:-}" ]; then
+  host=${TOOLNET_PUBLISH%%:*} dir=${TOOLNET_PUBLISH#*:}
+  ssh "$host" "mkdir -p '$dir'"
+  scp -q "$APK" dist/version.json "$TOOLNET_PUBLISH/"
+fi
+echo "published toolnet Android $VERSION ($SIZE bytes, sha256 $SHA)"

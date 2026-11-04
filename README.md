@@ -11,7 +11,8 @@ fallback).
 > app, installed from the owner app). Owner-approved membership, key rotation
 > on removal, subnet routes, exit nodes, MagicDNS, and hole punching through
 > carrier NAT on both ends (phone on LTE -> homelab direct, ~80-110 ms). The
-> owner app is a PWA with QR / join-code pairing. Not audited.
+> owner app is a PWA with QR / join-code pairing, at
+> https://manwe-777.github.io/toolnet/. Not audited.
 
 ```
             control plane: tool-db on Nostr relays (relays only see ciphertext)

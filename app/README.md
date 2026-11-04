@@ -6,6 +6,11 @@ routes, remove them. It writes exactly what `toolnet owner approve / routes /
 remove` write (see `../daemon/README.md`), so the CLI and the app can be used
 side by side.
 
+Hosted at **https://manwe-777.github.io/toolnet/**, deployed by
+`.github/workflows/owner-app.yml` on every push to `main` that touches `app/`.
+To self-host, serve `dist/` from anywhere (`Dockerfile` + `nginx.conf` do
+that); point the tray at it with `TOOLNET_OWNER_APP=<url>`.
+
 ```bash
 npm install
 npm run dev        # http://localhost:5173, and on your LAN
@@ -19,8 +24,8 @@ npm run build      # static files in dist/, serve them from anywhere (relative p
   `toolnet owner create`). It stays in this browser's localStorage.
 - **Network**: `home` by default; change it, and the Nostr relays, in
   settings. Use the relays your devices use (their `config.json`).
-- **Add a device**: on the device run `toolnet init --owner <npub> --net home`,
-  then `toolnet id --qr`, and scan the code
+- **Add a device**: run the install one-liner shown on that screen on the
+  device (or `toolnet id --qr` if it's already installed), and scan the code
   (`toolnet:join?device=npub1…&name=…`). Pasting the code, an npub or a 64-hex
   key works too. The IP defaults to the next free one, like the CLI.
 - **Remove** rotates the group key (new epoch), wrapped for the owner and the

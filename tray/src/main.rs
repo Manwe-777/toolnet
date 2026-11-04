@@ -10,7 +10,7 @@ use tokio::{io::AsyncWriteExt, sync::mpsc};
 use toolnet::ipc::{self, DaemonStatus, Request};
 
 /// The owner app (approve devices, routes): `$TOOLNET_OWNER_APP` overrides it
-const OWNER_APP: &str = "https://toolnet.manuh.app";
+const OWNER_APP: &str = "https://manwe-777.github.io/toolnet/";
 const POLL: Duration = Duration::from_secs(3);
 
 enum Action {
