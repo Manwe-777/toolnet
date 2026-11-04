@@ -107,6 +107,15 @@ enum Cmd {
         #[arg(long)]
         no_start: bool,
     },
+    /// Update to the latest release (checksums verified, settings kept); run as root
+    Update {
+        /// Only say whether there's a newer version (no root needed)
+        #[arg(long)]
+        check: bool,
+        /// Reinstall even if this version is the latest
+        #[arg(long)]
+        force: bool,
+    },
     /// Remove the service and binaries (keeps the identity unless --purge); run as root
     Uninstall {
         /// Also delete this device's identity (/var/lib/toolnet)
@@ -210,11 +219,12 @@ async fn main() -> Result<()> {
             return install::install(install::Opts { owner, net, relays, state_from, args, operator, log, no_tray, no_deps, no_start });
         }
         Cmd::Uninstall { purge } => return install::uninstall(purge),
+        Cmd::Update { check, force } => return install::update(check, force).await,
         _ => {}
     }
     let state = State::new(cli.state)?;
     match cli.cmd {
-        Cmd::Install { .. } | Cmd::Uninstall { .. } => unreachable!(),
+        Cmd::Install { .. } | Cmd::Uninstall { .. } | Cmd::Update { .. } => unreachable!(),
         Cmd::Init { owner, net, relays } => init(&state, owner, net, relays),
         Cmd::Id { qr } => print_id(&state, qr),
         Cmd::Owner { cmd } => owner(&state, cmd).await,

@@ -70,7 +70,8 @@ the systemd service (plus the tray icon on a desktop) and prints a QR code.
 Scan it in the owner app, and the device joins on its own. Works on any
 systemd distro (tested on Debian, Fedora and Arch).
 
-- Update: run the same command again (the identity and settings are kept).
+- Update: `sudo toolnet update` (`--check` to only look). Re-running the
+  one-liner works too; the identity and settings are kept either way.
 - Remove: `sudo toolnet uninstall` (`--purge` also deletes the identity).
 - Options: `--args "--advertise-exit-node"`, `--operator <user>`, `--no-tray`;
   see `toolnet install --help`.

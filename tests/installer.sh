@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # The Linux installer on clean distros, in Docker containers running systemd:
 # install.sh from a local "release" directory, the device joins a throwaway
-# network (owner on this machine, public Nostr relays), update keeps the
-# identity, uninstall keeps it, --purge deletes it.
+# network (owner on this machine, public Nostr relays), re-running install.sh
+# and `toolnet update` keep the identity and the operator, a tampered download
+# is refused, uninstall keeps the identity, --purge deletes it.
 #
 #   packaging/build-linux.sh && tests/installer.sh [debian fedora arch]
 #
@@ -19,6 +20,12 @@ DL=$WORK/dl
 mkdir -p "$DL"
 cp dist/linux/toolnet-linux-x86_64 dist/linux/toolnet-tray-linux-x86_64 packaging/install.sh "$DL/"
 (cd "$DL" && sha256sum toolnet-linux-* toolnet-tray-linux-* > SHA256SUMS)
+CURRENT=$(sed -n 's/^version = "\(.*\)"/\1/p' daemon/Cargo.toml | head -1)
+echo "$CURRENT" > "$DL/VERSION"
+# A "newer" release with the same binaries, for `toolnet update`
+DL2=$WORK/dl2
+cp -r "$DL" "$DL2"
+echo 99.0.0 > "$DL2/VERSION"
 
 # A throwaway network, owned from this machine
 OWNER_STATE=$WORK/owner
@@ -37,7 +44,7 @@ for distro in $DISTROS; do
   # (private) cgroup tree rw in boot.sh; NET_ADMIN + /dev/net/tun for the TUN
   c=$(docker run -d --cgroupns=private --cap-add SYS_ADMIN --cap-add NET_ADMIN --device /dev/net/tun \
         --tmpfs /run --tmpfs /run/lock \
-        --label toolnet-installer-test -v "$DL":/dl:ro --hostname "tn-$distro" "tn-$distro")
+        --label toolnet-installer-test -v "$DL":/dl:ro -v "$DL2":/dl2:ro --hostname "tn-$distro" "tn-$distro")
   docker exec "$c" sh -c 'until systemctl is-system-running 2>/dev/null | grep -qE "running|degraded"; do sleep 1; done'
   docker exec "$c" useradd -m alice
   echo "== $distro: install"
@@ -64,6 +71,21 @@ for distro in $DISTROS; do
   grep -q "toolnet:join" "$WORK/$distro-2.log" && fail "update printed a new join QR"
   [ "$(docker exec "$c" toolnet --state /var/lib/toolnet id | awk '/^device:/ {print $2}')" = "$DEVICE" ] || fail "identity changed"
   docker exec "$c" systemctl is-active -q toolnet || fail "service not active after update"
+
+  echo "== $distro: toolnet update"
+  docker exec -e TOOLNET_DOWNLOAD=/dl "$c" toolnet update --check | grep -q "is the latest" || fail "update --check: not the latest"
+  docker exec -e TOOLNET_DOWNLOAD=/dl "$c" toolnet update | grep -q "is the latest" || fail "update: should be a no-op"
+  docker exec -e TOOLNET_DOWNLOAD=/dl2 "$c" toolnet update --check | grep -q "99.0.0 is available" || fail "update --check: missed 99.0.0"
+  docker exec -e TOOLNET_DOWNLOAD=/dl2 "$c" toolnet update > "$WORK/$distro-3.log" 2>&1 || { cat "$WORK/$distro-3.log"; fail "update"; }
+  grep -q "updated toolnet $CURRENT -> 99.0.0" "$WORK/$distro-3.log" || { cat "$WORK/$distro-3.log"; fail "update didn't say it updated"; }
+  [ "$(docker exec "$c" toolnet --state /var/lib/toolnet id | awk '/^device:/ {print $2}')" = "$DEVICE" ] || fail "identity changed on update"
+  docker exec "$c" grep -q alice /etc/systemd/system/toolnet.service.d/operator.conf || fail "update lost the operator"
+  docker exec "$c" systemctl is-active -q toolnet || fail "service not active after toolnet update"
+  # A tampered binary is refused
+  docker exec "$c" sh -c 'mkdir /bad && cp /dl2/* /bad/ && echo x >> /bad/toolnet-linux-x86_64'
+  docker exec -e TOOLNET_DOWNLOAD=/bad "$c" toolnet update > "$WORK/$distro-4.log" 2>&1 && fail "tampered binary installed"
+  grep -q "doesn't match its checksum" "$WORK/$distro-4.log" || { cat "$WORK/$distro-4.log"; fail "tampered binary: wrong error"; }
+  docker exec "$c" systemctl is-active -q toolnet || fail "service not active after a refused update"
 
   echo "== $distro: uninstall"
   docker exec "$c" toolnet uninstall >/dev/null || fail "uninstall"

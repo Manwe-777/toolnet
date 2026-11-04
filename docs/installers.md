@@ -14,7 +14,8 @@ website of our own. Test the installer offline with `TOOLNET_DOWNLOAD=<dir>`.
 | `toolnet install` / `uninstall` | `daemon/src/install.rs` (units embedded from `packaging/`) |
 | static musl builds, x86_64 + aarch64 | `packaging/build-linux.sh` (Docker, cargo-zigbuild) |
 | the `curl \| sh` script | `packaging/install.sh` |
-| GitHub release (binaries, `SHA256SUMS`, `install.sh`) | `packaging/release.sh VERSION` |
+| GitHub release (binaries, `SHA256SUMS`, `install.sh`, `VERSION`) | `packaging/release.sh VERSION` |
+| `toolnet update` | `daemon/src/install.rs` |
 | the copyable command | owner app, "Add a device" |
 | distro tests (Debian, Fedora, Arch, with systemd) | `tests/installer.sh` |
 
@@ -64,9 +65,25 @@ line.
   the owner scans it in the owner app and the device joins, the same flow as
   the phone
 
-Updates: re-run the same command (`--owner` can be left out; the identity
-and the `up` flags are kept). Later, `toolnet update` could compare its
-version with the latest release and do the same.
+### Updates
+
+`sudo toolnet update` (`--check` only reports, no root needed; `--force`
+reinstalls):
+
+1. read the latest release's `VERSION` and compare it with its own
+2. download `toolnet-linux-<arch>`, and `toolnet-tray-linux-<arch>` if the
+   tray is installed (even over SSH, unlike `install.sh`, which only fetches
+   it with a desktop session), and check them against `SHA256SUMS`
+3. run the new binary's `install`, which keeps the identity, the `up` flags,
+   the log level and the operator
+
+HTTPS uses rustls on ring with the Mozilla roots built in, so it doesn't
+depend on the system's certificates. Re-running the one-liner still works too
+(`--owner` can be left out). `release.sh` refuses a version that isn't the
+crates' own, or every device would think it's always out of date.
+
+Later: the tray could show "update available" (`toolnet update --check` is
+the building block), and an opt-in timer could run it unattended.
 
 ## Linux
 

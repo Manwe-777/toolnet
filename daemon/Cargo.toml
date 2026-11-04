@@ -24,6 +24,11 @@ libc = "0.2.191"
 n0-watcher = "1"
 nostr = { version = "0.45", features = ["nip44", "rand", "std"] }
 nostr-sdk = "0.45.4"
+# toolnet update: the same versions iroh already builds (rustls on ring, no OpenSSL)
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+sha2 = "0.11"
+webpki-roots = "1"
 qrcode = { version = "0.14", default-features = false }
 rustls-pki-types = { version = "1", features = ["std"] }
 serde = { version = "1.0.229", features = ["derive"] }
