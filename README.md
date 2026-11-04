@@ -72,7 +72,8 @@ systemd distro (tested on Debian, Fedora and Arch).
 
 - Update: `sudo toolnet update` (`--check` to only look). Re-running the
   one-liner works too; the identity and settings are kept either way.
-- Remove: `sudo toolnet uninstall` (`--purge` also deletes the identity).
+- Remove: `sudo toolnet uninstall` keeps the identity and settings, so a
+  reinstall comes back the same; `--purge` deletes them too.
 - Options: `--args "--advertise-exit-node"`, `--operator <user>`, `--no-tray`;
   see `toolnet install --help`.
 

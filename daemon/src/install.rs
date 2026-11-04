@@ -159,18 +159,22 @@ pub fn uninstall(purge: bool) -> Result<()> {
     for f in [UNIT, TRAY_UNIT, BIN, TRAY_BIN] {
         remove(Path::new(f))?;
     }
-    if Path::new(DROPINS).exists() {
-        fs::remove_dir_all(DROPINS)?;
+    // Like a package manager's remove vs purge: the identity and the settings
+    // (up flags, operator, log level) stay unless --purge
+    if purge {
+        for dir in [DROPINS, STATE_DIR] {
+            if Path::new(dir).exists() {
+                fs::remove_dir_all(dir)?;
+            }
+        }
     }
     systemctl(&["daemon-reload"])?;
     if purge {
-        if Path::new(STATE_DIR).exists() {
-            fs::remove_dir_all(STATE_DIR)?;
-        }
-        println!("toolnet removed, with its identity ({STATE_DIR})");
+        println!("toolnet removed, with its identity ({STATE_DIR}) and settings");
     } else {
-        println!("toolnet removed. This device's identity is kept in {STATE_DIR}: reinstalling");
-        println!("brings it back as the same member (`toolnet uninstall --purge` deletes it)");
+        println!("toolnet removed. This device's identity ({STATE_DIR}) and settings ({DROPINS})");
+        println!("are kept: reinstalling brings it back as the same member, set up the same way.");
+        println!("`toolnet uninstall --purge` deletes them too.");
     }
     Ok(())
 }

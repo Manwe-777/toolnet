@@ -3,7 +3,7 @@
 # install.sh from a local "release" directory, the device joins a throwaway
 # network (owner on this machine, public Nostr relays), re-running install.sh
 # and `toolnet update` keep the identity and the operator, a tampered download
-# is refused, uninstall keeps the identity, --purge deletes it.
+# is refused, uninstall keeps the identity and settings, --purge deletes them.
 #
 #   packaging/build-linux.sh && tests/installer.sh [debian fedora arch]
 #
@@ -91,9 +91,11 @@ for distro in $DISTROS; do
   docker exec "$c" toolnet uninstall >/dev/null || fail "uninstall"
   docker exec "$c" sh -c '! test -e /usr/local/bin/toolnet && ! test -e /etc/systemd/system/toolnet.service && test -e /var/lib/toolnet/device.key' \
     || fail "uninstall left files / lost the identity"
+  docker exec "$c" grep -q alice /etc/systemd/system/toolnet.service.d/operator.conf || fail "uninstall lost the settings"
   docker exec -e TOOLNET_DOWNLOAD=/dl "$c" sh /dl/install.sh --no-start >/dev/null 2>&1 || fail "reinstall"
+  docker exec "$c" grep -q alice /etc/systemd/system/toolnet.service.d/operator.conf || fail "reinstall lost the operator"
   docker exec "$c" toolnet uninstall --purge >/dev/null || fail "uninstall --purge"
-  docker exec "$c" test ! -e /var/lib/toolnet || fail "--purge kept the state"
+  docker exec "$c" sh -c '! test -e /var/lib/toolnet && ! test -e /etc/systemd/system/toolnet.service.d' || fail "--purge kept the state / settings"
 
   $HOST_BIN owner remove "$distro" >/dev/null
   docker rm -f "$c" >/dev/null

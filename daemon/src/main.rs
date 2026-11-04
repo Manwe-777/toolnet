@@ -116,9 +116,9 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
-    /// Remove the service and binaries (keeps the identity unless --purge); run as root
+    /// Remove the service and binaries (keeps the identity and settings unless --purge); run as root
     Uninstall {
-        /// Also delete this device's identity (/var/lib/toolnet)
+        /// Also delete this device's identity (/var/lib/toolnet) and settings (the drop-ins)
         #[arg(long)]
         purge: bool,
     },
