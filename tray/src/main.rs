@@ -9,7 +9,9 @@ use ksni::{MenuItem, TrayMethods, menu::*};
 use tokio::{io::AsyncWriteExt, sync::mpsc};
 use toolnet::ipc::{self, DaemonStatus, Request};
 
-/// The owner app (approve devices, routes): `$TOOLNET_OWNER_APP` overrides it
+/// The owner app (approve devices, routes): the copy the daemon serves on
+/// this machine, else this public one (its storage, where the owner key is
+/// kept, is shared with other github.io sites). `$TOOLNET_OWNER_APP` overrides both
 const OWNER_APP: &str = "https://manwe-777.github.io/toolnet/";
 const POLL: Duration = Duration::from_secs(3);
 
@@ -100,7 +102,7 @@ impl ksni::Tray for Tray {
         let mut items: Vec<MenuItem<Self>> = vec![label(self.summary())];
         let Ok(s) = &self.status else {
             items.push(MenuItem::Separator);
-            items.push(open_owner_app());
+            items.push(self.open_owner_app());
             items.push(quit());
             return items;
         };
@@ -189,7 +191,7 @@ impl ksni::Tray for Tray {
             }
         }
         items.push(MenuItem::Separator);
-        items.push(open_owner_app());
+        items.push(self.open_owner_app());
         items.push(quit());
         items
     }
@@ -204,16 +206,18 @@ fn copy_item(text: String, value: String) -> MenuItem<Tray> {
         .into()
 }
 
-fn open_owner_app() -> MenuItem<Tray> {
-    StandardItem {
-        label: "Open the owner app".into(),
-        activate: Box::new(|this: &mut Tray| {
-            let url = std::env::var("TOOLNET_OWNER_APP").unwrap_or_else(|_| OWNER_APP.into());
-            this.send(Action::Open(url));
-        }),
-        ..Default::default()
+impl Tray {
+    fn open_owner_app(&self) -> MenuItem<Tray> {
+        let (label, url) = match (std::env::var("TOOLNET_OWNER_APP"), &self.status) {
+            (Ok(url), _) => ("Open the owner app".into(), url),
+            (_, Ok(DaemonStatus { owner_app: Some(port), .. })) => {
+                ("Open the owner app".into(), format!("http://127.0.0.1:{port}/"))
+            }
+            _ => ("Open the owner app (online copy, not this machine's)".into(), OWNER_APP.into()),
+        };
+        StandardItem { label, activate: Box::new(move |this: &mut Tray| this.send(Action::Open(url.clone()))), ..Default::default() }
+            .into()
     }
-    .into()
 }
 
 fn quit() -> MenuItem<Tray> {

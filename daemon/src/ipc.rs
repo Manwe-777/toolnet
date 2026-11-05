@@ -63,6 +63,9 @@ pub struct DaemonStatus {
     /// Members usable as exit nodes (allowed by the owner and offered)
     pub exit_nodes: Vec<String>,
     pub peers: Vec<PeerStatus>,
+    /// The port of the owner app this daemon serves on 127.0.0.1, if any
+    #[serde(default)]
+    pub owner_app: Option<u16>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]

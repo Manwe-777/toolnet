@@ -23,6 +23,7 @@ use toolnet::{
 };
 
 mod install;
+mod web;
 
 #[derive(Parser)]
 #[command(version, about = "Tailscale-style VPN with its control plane on tool-db / Nostr")]
@@ -159,6 +160,13 @@ enum Cmd {
         /// node through the control socket (the tray), besides root
         #[arg(long, env = "TOOLNET_OPERATOR")]
         operator: Option<String>,
+        /// Serve the owner app on this port: http://127.0.0.1:PORT for this
+        /// machine, this node's tailnet address for the members
+        #[arg(long, default_value_t = web::DEFAULT_PORT)]
+        owner_app_port: u16,
+        /// Don't serve the owner app (the tray opens the GitHub Pages copy)
+        #[arg(long)]
+        no_owner_app: bool,
     },
 }
 
@@ -250,12 +258,14 @@ async fn main() -> Result<()> {
             let name = (name != "none" && !name.is_empty()).then_some(name);
             control(&cli.socket, ipc::Request::ExitNode { name }).await
         }
-        Cmd::Up { no_tun, dev, offline, bind, iroh_relays, relay_ca, mut advertise_routes, advertise_exit_node, exit_node, no_dns, operator } => {
+        Cmd::Up { no_tun, dev, offline, bind, iroh_relays, relay_ca, mut advertise_routes, advertise_exit_node, exit_node, no_dns, operator, owner_app_port, no_owner_app } => {
             if advertise_exit_node {
                 advertise_routes.push("0.0.0.0/0".parse()?);
             }
             let socket = cli.socket;
-            up(&state, UpOpts { no_tun, dev, offline, bind, iroh_relays, relay_ca, advertise_routes, exit_node, no_dns, operator, socket }).await
+            let owner_app = (!no_owner_app).then_some(owner_app_port);
+            up(&state, UpOpts { no_tun, dev, offline, bind, iroh_relays, relay_ca, advertise_routes, exit_node, no_dns, operator, socket, owner_app })
+                .await
         }
     }
 }
@@ -520,6 +530,8 @@ struct UpOpts {
     no_dns: bool,
     operator: Option<String>,
     socket: PathBuf,
+    /// The owner app's port, None: not served
+    owner_app: Option<u16>,
 }
 
 /// IPv4 addresses of the hosts in these URLs (relays we must reach directly)
@@ -666,7 +678,7 @@ fn uid_of(user: &str) -> Result<u32> {
 
 async fn up(state: &State, opts: UpOpts) -> Result<()> {
     os::inherit_capabilities();
-    let UpOpts { no_tun, dev, offline, bind, iroh_relays, relay_ca, advertise_routes, exit_node, no_dns, operator, socket } = opts;
+    let UpOpts { no_tun, dev, offline, bind, iroh_relays, relay_ca, advertise_routes, exit_node, no_dns, operator, socket, owner_app } = opts;
     let operator = operator.as_deref().map(uid_of).transpose()?;
     let node = Node::start(
         state,
@@ -682,6 +694,23 @@ async fn up(state: &State, opts: UpOpts) -> Result<()> {
     let mut prefs = ipc::Prefs::load(&prefs_path).unwrap_or(ipc::Prefs { connected: true, exit_node });
     let (status_tx, status_rx) = tokio::sync::watch::channel(ipc::DaemonStatus::default());
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel::<ipc::Command>(8);
+    let owner_app = match owner_app {
+        None => None,
+        Some(_) if !web::available() => {
+            warn!("this build has no owner app (app/dist was missing)");
+            None
+        }
+        Some(port) => match web::bind(port).await {
+            Ok(listener) => {
+                tokio::spawn(web::serve(listener, status_rx.clone()));
+                Some(port)
+            }
+            Err(e) => {
+                warn!("no local owner app (the tray opens the GitHub Pages copy): {e:#}");
+                None
+            }
+        },
+    };
     {
         let engine = engine.clone();
         tokio::spawn(async move {
@@ -761,7 +790,8 @@ async fn up(state: &State, opts: UpOpts) -> Result<()> {
             last_status = Some(status.clone());
         }
         let publish = |exit_active: bool| {
-            status_tx.send_replace(daemon_status(&cfg, &keys, &status, view.as_ref(), &prefs, exit_active));
+            let s = daemon_status(&cfg, &keys, &status, view.as_ref(), &prefs, exit_active);
+            status_tx.send_replace(ipc::DaemonStatus { owner_app, ..s });
         };
         let (Status::Member, Some(view)) = (&status, &view) else {
             if teardown_at.is_none() {

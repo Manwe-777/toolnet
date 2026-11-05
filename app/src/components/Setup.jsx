@@ -9,6 +9,10 @@ export const keyInputProps = {
   spellCheck: false,
 };
 
+// The public copy: its storage (where the key is kept) is shared with every
+// other site on the same github.io origin. The daemon serves a private copy
+const PUBLIC_COPY = location.hostname.endsWith(".github.io");
+
 function Setup({ onDone }) {
   const [key, setKey] = useState("");
   const [error, setError] = useState("");
@@ -28,6 +32,14 @@ function Setup({ onDone }) {
       <img src="./icon.svg" alt="" className="setup__logo" />
       <h1>toolnet owner</h1>
       <p className="muted">Approve and remove the devices of your toolnet network.</p>
+      {PUBLIC_COPY && (
+        <p className="notice notice--bad">
+          This is the online copy: the key would be kept in storage that other github.io sites
+          share. On a machine running toolnet, open <code>http://127.0.0.1:7477</code> instead
+          (or the tray's “Open the owner app”); from another member, this node's tailnet address
+          on port 7477.
+        </p>
+      )}
       <form className="stack" onSubmit={submit}>
         <input
           type="password"

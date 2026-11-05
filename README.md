@@ -49,9 +49,17 @@ safe: it controls the network. Use `toolnet-linux-aarch64` on ARM.
 
 ### 2. Open the owner app
 
-**https://manwe-777.github.io/toolnet/** — sign in with the owner key (the hex
-in `owner.key`, or an `nsec1…`). The key stays in that browser's local
-storage. From there you approve devices, set their routes and remove them.
+Every Linux node serves it: **http://127.0.0.1:7477** on that machine (the
+tray's *Open the owner app*), and `http://<node's tailnet IP>:7477` for the
+other members, so a phone on the network can manage it through your server.
+Sign in with the owner key (the hex in `owner.key`, or an `nsec1…`). From
+there you approve devices, set their routes and remove them.
+
+The key stays in that browser's local storage, which is why the local copy is
+the one to use: its origin is yours alone. The online copy,
+**https://manwe-777.github.io/toolnet/**, works anywhere (and before your
+first device), but shares its storage with the other sites on that github.io
+origin. Turn the local one off with `sudo toolnet install --args "--no-owner-app"`.
 It's a PWA: add it to your phone's home screen.
 
 ### 3. Add devices
@@ -133,7 +141,7 @@ and its trade-offs are in [docs/](docs).
 |---|---|
 | Linux (x86_64, aarch64) | Daemon, systemd service, tray icon, one-line installer |
 | Android | App (VpnService), including exit node |
-| Owner app (any browser) | PWA on GitHub Pages, or self-hosted ([app/](app)) |
+| Owner app (any browser) | PWA served by every Linux node, on GitHub Pages, or self-hosted ([app/](app)) |
 | macOS, Windows | Planned ([docs/installers.md](docs/installers.md)) |
 
 ## Self-hosting

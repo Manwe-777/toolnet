@@ -12,6 +12,8 @@ IMAGE=${ZIGBUILD_IMAGE:-ghcr.io/rust-cross/cargo-zigbuild:0.24.0}
 TOOLCHAIN=${TOOLCHAIN:-1.99.1}
 OUT=dist/linux
 mkdir -p "$OUT"
+# The owner app the daemon serves is embedded at build time (daemon/build.rs)
+(cd app && npm ci --silent && npm run build >/dev/null)
 docker run --rm \
   -v "$PWD":/src -w /src \
   -v toolnet-cargo-registry:/usr/local/cargo/registry \
