@@ -26,6 +26,11 @@ const DROPINS: &str = "/etc/systemd/system/toolnet.service.d";
 const TRAY_UNIT: &str = "/etc/systemd/user/toolnet-tray.service";
 const UNIT_TEXT: &str = include_str!("../../packaging/toolnet.service");
 const TRAY_UNIT_TEXT: &str = include_str!("../../packaging/toolnet-tray.service");
+/// The tray in the desktop's app launcher (with the owner app's icon)
+const DESKTOP: &str = "/usr/local/share/applications/toolnet.desktop";
+const DESKTOP_TEXT: &str = include_str!("../../packaging/toolnet.desktop");
+const ICON: &str = "/usr/local/share/icons/hicolor/scalable/apps/toolnet.svg";
+const ICON_TEXT: &str = include_str!("../../app/public/icon.svg");
 
 pub struct Opts {
     pub owner: Option<String>,
@@ -110,6 +115,7 @@ pub fn install(o: Opts) -> Result<()> {
     }
     if with_tray {
         write(TRAY_UNIT, TRAY_UNIT_TEXT, 0o644)?;
+        launcher()?;
     }
     systemctl(&["daemon-reload"])?;
     systemctl(&["enable", "--quiet", "toolnet"])?;
@@ -135,7 +141,7 @@ pub fn install(o: Opts) -> Result<()> {
         println!("  operator: {user} (may connect, disconnect and pick the exit node)");
     }
     if with_tray {
-        println!("  tray:     toolnet-tray, starts with the desktop session");
+        println!("  tray:     toolnet-tray, starts with the desktop session (or open \"toolnet\" from the app launcher)");
     }
     if fresh {
         println!();
@@ -156,9 +162,10 @@ pub fn uninstall(purge: bool) -> Result<()> {
         let _ = systemctl(&["--global", "disable", "--quiet", "toolnet-tray"]);
     }
     let _ = systemctl(&["disable", "--now", "--quiet", "toolnet"]);
-    for f in [UNIT, TRAY_UNIT, BIN, TRAY_BIN] {
+    for f in [UNIT, TRAY_UNIT, BIN, TRAY_BIN, DESKTOP, ICON] {
         remove(Path::new(f))?;
     }
+    refresh_launcher();
     // Like a package manager's remove vs purge: the identity and the settings
     // (up flags, operator, log level) stay unless --purge
     if purge {
@@ -177,6 +184,30 @@ pub fn uninstall(purge: bool) -> Result<()> {
         println!("`toolnet uninstall --purge` deletes them too.");
     }
     Ok(())
+}
+
+/// The launcher entry and its icon, then the desktop's caches (where it has them)
+fn launcher() -> Result<()> {
+    for (path, text) in [(DESKTOP, DESKTOP_TEXT), (ICON, ICON_TEXT)] {
+        fs::create_dir_all(Path::new(path).parent().expect("absolute path"))?;
+        write(path, text, 0o644)?;
+    }
+    refresh_launcher();
+    Ok(())
+}
+
+fn refresh_launcher() {
+    let quiet = |cmd: &str, args: &[&str]| {
+        if find_command(cmd).is_some() {
+            let _ = Command::new(cmd).args(args).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+        }
+    };
+    quiet("update-desktop-database", &["-q", "/usr/local/share/applications"]);
+    // Only refresh a cache that's there: a new one would hide icons other
+    // software adds later without updating it
+    if Path::new("/usr/local/share/icons/hicolor/icon-theme.cache").exists() {
+        quiet("gtk-update-icon-cache", &["-q", "-t", "-f", "/usr/local/share/icons/hicolor"]);
+    }
 }
 
 /// Where releases come from; TOOLNET_DOWNLOAD overrides it (a URL or a local

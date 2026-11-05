@@ -1,0 +1,14 @@
+[Desktop Entry]
+# Installed by `toolnet install` (with the tray) as
+# /usr/local/share/applications/toolnet.desktop. Starts the tray through its
+# systemd user unit, so it still restarts on a crash; already running: nothing
+# happens.
+Type=Application
+Name=toolnet
+GenericName=VPN
+Comment=Tray icon: connect, disconnect, pick the exit node, see the devices
+Exec=systemctl --user start toolnet-tray.service
+Icon=toolnet
+Terminal=false
+Categories=Network;
+Keywords=vpn;tailnet;mesh;tray;

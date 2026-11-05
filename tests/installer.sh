@@ -92,10 +92,16 @@ for distro in $DISTROS; do
   docker exec "$c" sh -c '! test -e /usr/local/bin/toolnet && ! test -e /etc/systemd/system/toolnet.service && test -e /var/lib/toolnet/device.key' \
     || fail "uninstall left files / lost the identity"
   docker exec "$c" grep -q alice /etc/systemd/system/toolnet.service.d/operator.conf || fail "uninstall lost the settings"
-  docker exec -e TOOLNET_DOWNLOAD=/dl "$c" sh /dl/install.sh --no-start >/dev/null 2>&1 || fail "reinstall"
+  # Reinstalled "from a desktop" (DISPLAY set): the tray, its launcher entry and icon too
+  docker exec -e TOOLNET_DOWNLOAD=/dl -e DISPLAY=:0 "$c" sh /dl/install.sh --no-start >/dev/null 2>&1 || fail "reinstall"
   docker exec "$c" grep -q alice /etc/systemd/system/toolnet.service.d/operator.conf || fail "reinstall lost the operator"
+  docker exec "$c" sh -c 'test -x /usr/local/bin/toolnet-tray && test -e /etc/systemd/user/toolnet-tray.service \
+    && grep -q "^Exec=systemctl --user start toolnet-tray" /usr/local/share/applications/toolnet.desktop \
+    && test -s /usr/local/share/icons/hicolor/scalable/apps/toolnet.svg' || fail "tray / launcher entry not installed"
   docker exec "$c" toolnet uninstall --purge >/dev/null || fail "uninstall --purge"
   docker exec "$c" sh -c '! test -e /var/lib/toolnet && ! test -e /etc/systemd/system/toolnet.service.d' || fail "--purge kept the state / settings"
+  docker exec "$c" sh -c '! test -e /usr/local/bin/toolnet-tray && ! test -e /usr/local/share/applications/toolnet.desktop \
+    && ! test -e /usr/local/share/icons/hicolor/scalable/apps/toolnet.svg' || fail "uninstall left the tray / launcher entry"
 
   $HOST_BIN owner remove "$distro" >/dev/null
   docker rm -f "$c" >/dev/null
